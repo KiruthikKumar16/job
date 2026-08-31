@@ -228,13 +228,6 @@ def run_extraction(terms: list[str], locations: list[str], platforms: list[str],
 def show_scrape_section() -> None:
     st.title("Scrape & Extract Data")
     st.caption("Collect public job listings, enrich every record, and keep the dataset ready for analysis.")
-    if st.button("Reset extraction selections", key="reset_extraction", type="secondary"):
-        _reset_state([
-            "scrape_roles", "scrape_custom_roles", "scrape_locations", "scrape_linkedin", "scrape_indeed",
-            "scrape_glassdoor", "scrape_naukri", "scrape_max_results", "scrape_freshness", "scrape_custom_amount",
-            "scrape_custom_unit", "scrape_min_exp", "scrape_max_exp", "scrape_proxy_text",
-        ])
-
     freshness = st.selectbox(
         "Jobs posted within",
         options=["Any time", "Past 12 hours", "Past 2 days", "Past 7 days", "Custom"],
@@ -283,7 +276,16 @@ def show_scrape_section() -> None:
         max_exp = experience_columns[1].number_input("Max experience (years)", 0.0, 40.0, 40.0, 0.5, key="scrape_max_exp")
         with st.expander("Proxy configuration (optional)"):
             proxy_text = st.text_area("Proxies", placeholder="host:port, user:pass@host:port", height=80, key="scrape_proxy_text")
-        submitted = st.form_submit_button("Start Extraction Pipeline", type="primary", use_container_width=True)
+        action_columns = st.columns(2)
+        reset_submitted = action_columns[0].form_submit_button("Reset selections", use_container_width=True)
+        submitted = action_columns[1].form_submit_button("Start Extraction Pipeline", type="primary", use_container_width=True)
+
+    if reset_submitted:
+        _reset_state([
+            "scrape_roles", "scrape_custom_roles", "scrape_locations", "scrape_linkedin", "scrape_indeed",
+            "scrape_glassdoor", "scrape_naukri", "scrape_max_results", "scrape_freshness", "scrape_custom_amount",
+            "scrape_custom_unit", "scrape_min_exp", "scrape_max_exp", "scrape_proxy_text",
+        ])
 
     if not submitted:
         return
