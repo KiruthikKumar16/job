@@ -14,6 +14,7 @@ V2 is a Python job scraping, qualification extraction, filtering, persistence, a
 - Run independent platform/location searches concurrently with per-query progress and graceful partial failures.
 - Track source metadata, data-quality scores, missing descriptions, and extraction-run history.
 - Filter the dashboard by source, work mode, posted date, and minimum data quality.
+- Select multiple default job roles such as Data Analyst, Data Engineer, and Full Stack Developer in both app sections.
 - Run regression tests in CI and package the app with Docker.
 
 ## Requirements

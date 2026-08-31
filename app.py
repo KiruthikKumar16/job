@@ -31,8 +31,13 @@ PLATFORM_LABELS = {
     "Naukri": "naukri",
 }
 LOCATION_OPTIONS = ["Bengaluru", "Hyderabad", "Pune", "Mumbai", "Chennai", "Delhi NCR"]
+ROLE_OPTIONS = [
+    "Data Analyst", "Data Engineer", "Full Stack Developer", "Backend Developer",
+    "Frontend Developer", "Python Developer", "Machine Learning Engineer", "Cloud Engineer",
+]
 DASHBOARD_COLUMNS = {
     "site": "Source",
+    "search_term": "Job Role",
     "title": "Title",
     "company": "Company",
     "location": "Location",
@@ -73,7 +78,7 @@ def load_jobs(database_path: str, data_directory: str) -> pd.DataFrame:
 
 def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
-    for column in ("site", "title", "company", "location", "qualification", "seniority", "job_url", "work_mode"):
+    for column in ("site", "search_term", "title", "company", "location", "qualification", "seniority", "job_url", "work_mode"):
         if column not in result.columns:
             result[column] = ""
         result[column] = result[column].fillna("").astype(str)
@@ -204,10 +209,16 @@ def show_scrape_section() -> None:
     st.title("Scrape & Extract Data")
     st.caption("Collect public job listings, enrich every record, and keep the dataset ready for analysis.")
     with st.form("extraction_form", clear_on_submit=False):
-        terms_text = st.text_input(
-            "Job title / search terms",
-            "Data Analyst, Full Stack Developer",
-            help="Enter one or more job names separated by commas, for example: Data Analyst, Full Stack Developer",
+        selected_roles = st.multiselect(
+            "Job roles / search terms",
+            ROLE_OPTIONS,
+            default=["Data Analyst", "Data Engineer", "Full Stack Developer"],
+            help="Select multiple roles to search in one extraction run.",
+        )
+        custom_roles = st.text_input(
+            "Additional roles (optional)",
+            placeholder="e.g. DevOps Engineer, BI Analyst",
+            help="Add roles not listed above, separated by commas.",
         )
         locations = st.multiselect("Locations", LOCATION_OPTIONS, default=["Bengaluru", "Hyderabad"])
         platform_columns = st.columns(4)
@@ -231,8 +242,9 @@ def show_scrape_section() -> None:
 
     if not submitted:
         return
-    if not _parse_terms(terms_text):
-        st.error("Enter at least one search term.")
+    terms = selected_roles + _parse_terms(custom_roles)
+    if not terms:
+        st.error("Select at least one job role or add a custom search term.")
         return
     if not locations or not platforms:
         st.error("Select at least one location and platform.")
@@ -247,7 +259,7 @@ def show_scrape_section() -> None:
         try:
             progress.progress(20, text="Collecting public listings")
             records, raw_count, valid_count, logs = run_extraction(
-                _parse_terms(terms_text), locations, platforms, max_results, min_exp, max_exp,
+                terms, locations, platforms, max_results, min_exp, max_exp,
                 _parse_proxies(proxy_text),
                 hours_old=freshness_hours,
                 progress_callback=lambda completed, total, label: progress.progress(
@@ -285,6 +297,8 @@ def show_dashboard() -> None:
 
     st.sidebar.subheader("Dashboard filters")
     sources = st.sidebar.multiselect("Source", sorted(data["site"].unique()))
+    roles = sorted(value for value in data["search_term"].unique() if value)
+    selected_roles = st.sidebar.multiselect("Job role", roles)
     qualifications = st.sidebar.multiselect("Qualification", sorted(data["qualification"].unique()))
     skill_values = sorted({skill for skills in data["extracted_skills"] for skill in skills if skill != "Extracted from Title Only"})
     skills = st.sidebar.multiselect("Skills", skill_values)
@@ -304,6 +318,8 @@ def show_dashboard() -> None:
     filtered = data.copy()
     if sources:
         filtered = filtered[filtered["site"].isin(sources)]
+    if selected_roles:
+        filtered = filtered[filtered["search_term"].isin(selected_roles)]
     if qualifications:
         filtered = filtered[filtered["qualification"].isin(qualifications)]
     if skills:
