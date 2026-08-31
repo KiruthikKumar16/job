@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import difflib
 import io
 import json
 import logging
@@ -74,6 +75,63 @@ def load_jobs(database_path: str, data_directory: str) -> pd.DataFrame:
     if json_exports:
         return _prepare_frame(pd.read_json(json_exports[0]))
     return pd.DataFrame()
+
+
+def _column_key(value: str) -> str:
+    return "".join(character for character in str(value).casefold() if character.isalnum())
+
+
+IMPORT_ALIASES = {
+    "title": ["title", "jobtitle", "jobname", "position", "role", "designation", "jobrole"],
+    "company": ["company", "companyname", "employer", "organization", "organisation", "hiringcompany"],
+    "location": ["location", "joblocation", "city", "place", "worklocation", "勤務地"],
+    "job_url": ["joburl", "url", "applyurl", "applicationurl", "link", "joblink", "applylink"],
+    "description": ["description", "jobdescription", "jobdetails", "details", "summary", "aboutthejob", "content"],
+    "date_posted": ["dateposted", "posteddate", "postingdate", "date", "published", "createdat"],
+    "qualification": ["qualification", "degree", "education", "educationalqualification", "degree要求"],
+    "extracted_skills": ["skills", "skill", "requiredskills", "technologies", "techstack", "competencies"],
+    "min_exp": ["minexp", "minimumexperience", "experienceyears", "yearsofexperience", "experience"],
+    "max_exp": ["maxexp", "maximumexperience", "experienceto"],
+    "site": ["site", "source", "platform", "jobboard", "portal"],
+}
+
+
+def _match_import_columns(columns: list[str]) -> dict[str, str]:
+    """Map flexible CSV headers to canonical fields using aliases and fuzzy NLP-like tokens."""
+    normalized = {_column_key(column): column for column in columns}
+    matches: dict[str, str] = {}
+    for target, aliases in IMPORT_ALIASES.items():
+        alias_keys = [_column_key(alias) for alias in aliases]
+        exact = next((normalized[key] for key in alias_keys if key in normalized), None)
+        if exact:
+            matches[target] = exact
+            continue
+        candidates = difflib.get_close_matches(target, list(normalized), n=1, cutoff=0.72)
+        if candidates:
+            matches[target] = normalized[candidates[0]]
+    return matches
+
+
+def normalize_imported_csv(frame: pd.DataFrame, source_name: str = "csv") -> pd.DataFrame:
+    """Normalize arbitrary CSV columns, then enrich records with the shared NLP pipeline."""
+    matches = _match_import_columns(list(frame.columns))
+    normalized = pd.DataFrame(index=frame.index)
+    for target, column in matches.items():
+        normalized[target] = frame[column]
+    for column in NORMALIZED_COLUMNS:
+        if column not in normalized:
+            normalized[column] = ""
+    if "site" not in matches:
+        normalized["site"] = source_name
+    if "search_term" not in normalized:
+        normalized["search_term"] = "Imported CSV"
+    normalized = normalized.reindex(columns=NORMALIZED_COLUMNS + ["search_term"])
+    return _prepare_frame(enrich_jobs(normalized))
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_csv_file(path: str) -> pd.DataFrame:
+    return normalize_imported_csv(pd.read_csv(path), Path(path).stem)
 
 
 def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -210,7 +268,7 @@ def run_extraction(terms: list[str], locations: list[str], platforms: list[str],
             raw = raw.drop_duplicates(subset=["job_url"], keep="first").reset_index(drop=True)
         enriched = enrich_jobs(raw)
         save_to_sqlite(enriched, str(DATABASE_PATH), "jobs")
-        save_to_files(enriched, str(BASE_DIR / "jobs"))
+        save_to_files(enriched, str(BASE_DIR / "job_market_export"))
         valid_count = int(enriched.get("title", pd.Series(dtype=str)).astype(str).str.strip().ne("").sum())
         save_extraction_run(str(DATABASE_PATH), {
             "run_id": str(uuid4()),
@@ -339,7 +397,17 @@ def _display_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 def show_dashboard() -> None:
     st.title("Analytics Dashboard")
+    csv_files = sorted(BASE_DIR.glob("*.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
+    source_options = ["SQLite database (jobs.db)"] + [f"CSV: {path.name}" for path in csv_files]
+    selected_source = st.sidebar.selectbox("Data source", source_options, key="dashboard_data_source")
+    if st.sidebar.button("Refresh data", key="refresh_dashboard_data"):
+        load_jobs.clear()
+        load_csv_file.clear()
+        st.rerun()
     data = load_jobs(str(DATABASE_PATH), str(BASE_DIR))
+    if selected_source.startswith("CSV: "):
+        selected_path = BASE_DIR / selected_source.removeprefix("CSV: ")
+        data = load_csv_file(str(selected_path))
     if data.empty:
         st.info("No extracted jobs found. Run the extraction pipeline first.")
         return
@@ -379,7 +447,7 @@ def show_dashboard() -> None:
         )
     if st.sidebar.button("Reset dashboard selections", key="reset_dashboard", type="secondary", use_container_width=True):
         _reset_state([
-            "dashboard_source", "dashboard_role", "dashboard_qualification", "dashboard_skills", "dashboard_seniority",
+            "dashboard_data_source", "dashboard_source", "dashboard_role", "dashboard_qualification", "dashboard_skills", "dashboard_seniority",
             "dashboard_location", "dashboard_work_mode", "dashboard_quality", "dashboard_posted_filter",
             "dashboard_window", "dashboard_unit", "dashboard_posted_range",
         ])

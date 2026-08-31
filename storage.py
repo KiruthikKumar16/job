@@ -73,7 +73,7 @@ def load_extraction_runs(db_path: str, limit: int = 20) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def save_to_files(df: pd.DataFrame, base_filename: str = "job_export") -> tuple[Path, Path]:
+def save_to_files(df: pd.DataFrame, base_filename: str = "job_market_export") -> tuple[Path, Path]:
     """Write UTF-8 timestamped JSON and CSV exports and return their paths."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     base = Path(base_filename)

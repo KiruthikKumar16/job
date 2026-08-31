@@ -17,6 +17,8 @@ V2 is a Python job scraping, qualification extraction, filtering, persistence, a
 - Select multiple default job roles such as Data Analyst, Data Engineer, and Full Stack Developer in both app sections.
 - Use preset or custom hours/days posting windows during extraction and in Analytics, including custom calendar ranges.
 - Set a numeric maximum result count with a slider or drag the right endpoint to `No limit`.
+- Export files use the readable `job_market_export_<timestamp>` name.
+- Choose any local CSV from the Analytics data-source selector; flexible headers are mapped and re-enriched automatically.
 - Run regression tests in CI and package the app with Docker.
 
 ## Requirements

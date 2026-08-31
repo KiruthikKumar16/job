@@ -3,6 +3,7 @@ import pandas as pd
 from filter import filter_jobs
 from parser import enrich_jobs, extract_qualification, extract_skills
 from storage import load_extraction_runs, save_extraction_run, save_to_files
+from app import normalize_imported_csv
 
 
 def test_generic_qualification_is_never_unspecified():
@@ -38,3 +39,16 @@ def test_run_history_and_export_keep_qualification(tmp_path):
     _, csv_path = save_to_files(pd.DataFrame([{"title": "A", "qualification": None}]), str(tmp_path / "jobs"))
     exported = pd.read_csv(csv_path)
     assert exported.loc[0, "qualification"] == "Degree Required"
+
+
+def test_arbitrary_csv_headers_are_normalized_and_enriched():
+    frame = normalize_imported_csv(pd.DataFrame({
+        "Job Name": ["Data Analyst"],
+        "Employer": ["Acme"],
+        "City": ["Pune"],
+        "Apply Link": ["https://example.com/a"],
+        "Job Details": ["Python SQL Bachelor's in Computer Science"],
+    }))
+    assert frame.loc[0, "title"] == "Data Analyst"
+    assert frame.loc[0, "qualification"] == "Bachelor's (Computer Science/IT)"
+    assert frame.loc[0, "extracted_skills"] == ["Python", "SQL"]
