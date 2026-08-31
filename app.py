@@ -147,6 +147,7 @@ def _parse_proxies(raw_proxies: str) -> list[str] | None:
 
 def run_extraction(terms: list[str], locations: list[str], platforms: list[str], max_results: int,
                    min_exp: float, max_exp: float, proxies: list[str] | None,
+                   hours_old: int | None = None,
                    progress_callback: Callable[[int, int, str], None] | None = None
                    ) -> tuple[pd.DataFrame, int, int, list[str]]:
     """Fetch each query independently so blocked sources cannot stall the UI."""
@@ -158,7 +159,10 @@ def run_extraction(terms: list[str], locations: list[str], platforms: list[str],
         def collect_one(combination: tuple[str, str, str]) -> tuple[tuple[str, str, str], pd.DataFrame | None, str]:
             term, location, platform = combination
             try:
-                frame = fetch_jobs([term], [location], [platform], max_results=max_results, proxies=proxies)
+                frame = fetch_jobs(
+                    [term], [location], [platform], max_results=max_results,
+                    proxies=proxies, hours_old=hours_old,
+                )
                 return combination, frame, "success" if not frame.empty else "empty"
             except Exception as error:
                 logging.getLogger(__name__).warning(
@@ -200,7 +204,11 @@ def show_scrape_section() -> None:
     st.title("Scrape & Extract Data")
     st.caption("Collect public job listings, enrich every record, and keep the dataset ready for analysis.")
     with st.form("extraction_form", clear_on_submit=False):
-        terms_text = st.text_input("Job title / search terms", "Software Engineer, Data Engineer")
+        terms_text = st.text_input(
+            "Job title / search terms",
+            "Data Analyst, Full Stack Developer",
+            help="Enter one or more job names separated by commas, for example: Data Analyst, Full Stack Developer",
+        )
         locations = st.multiselect("Locations", LOCATION_OPTIONS, default=["Bengaluru", "Hyderabad"])
         platform_columns = st.columns(4)
         platforms: list[str] = []
@@ -208,6 +216,12 @@ def show_scrape_section() -> None:
             if column.checkbox(label, value=True):
                 platforms.append(PLATFORM_LABELS[label])
         max_results = st.slider("Max results per search", 10, 200, 50, step=10)
+        freshness = st.selectbox(
+            "Jobs posted within",
+            options=["Any time", "Past 12 hours", "Past 2 days", "Past 7 days"],
+            index=2,
+            help="Limit results to recent postings when the source provides a posting date.",
+        )
         experience_columns = st.columns(2)
         min_exp = experience_columns[0].number_input("Min experience (years)", 0.0, 40.0, 0.0, 0.5)
         max_exp = experience_columns[1].number_input("Max experience (years)", 0.0, 40.0, 40.0, 0.5)
@@ -228,12 +242,14 @@ def show_scrape_section() -> None:
         return
 
     progress = st.progress(0, text="Starting extraction pipeline")
+    freshness_hours = {"Any time": None, "Past 12 hours": 12, "Past 2 days": 48, "Past 7 days": 168}[freshness]
     with st.status("Running extraction pipeline", expanded=True) as status:
         try:
             progress.progress(20, text="Collecting public listings")
             records, raw_count, valid_count, logs = run_extraction(
                 _parse_terms(terms_text), locations, platforms, max_results, min_exp, max_exp,
                 _parse_proxies(proxy_text),
+                hours_old=freshness_hours,
                 progress_callback=lambda completed, total, label: progress.progress(
                     int((completed / total) * 90) if total else 90, text=label,
                 ),

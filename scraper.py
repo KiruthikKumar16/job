@@ -133,7 +133,7 @@ def _is_block_error(error: Exception) -> bool:
 
 
 def _jobspy_fetch(term: str, location: str, site: str, max_results: int, proxies: list[str] | None,
-                  country: str) -> pd.DataFrame:
+                  country: str, hours_old: int | None = None) -> pd.DataFrame:
     """Run one JobSpy query; imports lazily so non-scraping commands still work."""
     from jobspy import scrape_jobs  # python-jobspy
 
@@ -144,6 +144,8 @@ def _jobspy_fetch(term: str, location: str, site: str, max_results: int, proxies
     }
     if site in {"indeed", "glassdoor"}:
         options["country_indeed"] = country
+    if hours_old is not None:
+        options["hours_old"] = hours_old
     if proxies:
         # JobSpy round-robins this list. Its accepted format is host:port or
         # user:password@host:port; use the same address format in --proxies.
@@ -253,7 +255,7 @@ def _extract_browser_cards(html: str, site: str, fallback_location: str, limit: 
 
 
 def fetch_jobs(search_terms: list[str], locations: list[str], platforms: list[str], max_results: int = 50,
-               proxies: list[str] | None = None, country: str = "India") -> pd.DataFrame:
+               proxies: list[str] | None = None, country: str = "India", hours_old: int | None = None) -> pd.DataFrame:
     """Fetch jobs for all query combinations, falling back after access blocks.
 
     A non-blocking primary failure is logged and skipped; a recognized block
@@ -280,7 +282,7 @@ def fetch_jobs(search_terms: list[str], locations: list[str], platforms: list[st
                 time.sleep(random.uniform(1.0, 3.0))
                 jobs = _naukri_fetch(term, location, max_results)
             else:
-                jobs = _jobspy_fetch(term, location, site, max_results, active_proxies, country)
+                jobs = _jobspy_fetch(term, location, site, max_results, active_proxies, country, hours_old)
                 jobs = _annotate_jobs(jobs, term, location)
             frames.append(jobs)
             if jobs.empty and site in {"glassdoor", "naukri"}:
@@ -298,7 +300,7 @@ def fetch_jobs(search_terms: list[str], locations: list[str], platforms: list[st
                     active_proxies = get_proxy_pool()
                     if active_proxies:
                         LOGGER.info("Retrying %s with %d validated public proxies", site, len(active_proxies))
-                        frames.append(_jobspy_fetch(term, location, site, max_results, active_proxies, country))
+                        frames.append(_jobspy_fetch(term, location, site, max_results, active_proxies, country, hours_old))
                         continue
                     LOGGER.warning("No working public proxies available for %s", site)
                 except Exception as proxy_error:
