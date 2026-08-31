@@ -1,0 +1,76 @@
+# Job Market Explorer
+
+V1 is a Python job scraping, qualification extraction, filtering, persistence, and Streamlit analytics application for public job listings.
+
+## Features
+
+- Collect listings from LinkedIn, Indeed, Glassdoor, and Naukri through the scraper pipeline.
+- Normalize job records and retain listings even when descriptions are missing.
+- Extract technical degrees with exact regex matching and generic degree fallbacks.
+- Detect skills independently with word-boundary matching.
+- Classify experience, seniority, and work mode.
+- Persist enriched data to SQLite and timestamped CSV/JSON exports.
+- Explore qualifications, skills, locations, seniority, and experience in the Streamlit dashboard.
+
+## Requirements
+
+Use CPython 3.10, 3.11, or 3.12. The pinned JobSpy dependency uses NumPy 1.26.3, which may not have a wheel for newer Python versions on Windows.
+
+## Windows setup
+
+```powershell
+py -3.12 -m venv .venv312
+.venv312\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+## Run the web application
+
+```powershell
+.venv312\Scripts\python.exe -m streamlit run app.py
+```
+
+Open the local URL shown by Streamlit, normally `http://localhost:8501`.
+
+Use **Scrape & Extract Data** to configure a search and save results. Use **Analytics Dashboard** to filter and visualize the latest SQLite dataset.
+
+## Run from the command line
+
+```powershell
+.venv312\Scripts\python.exe main.py `
+  --terms "Data Engineer" `
+  --locations "Bengaluru, India" "Hyderabad, India" `
+  --platforms linkedin,indeed,glassdoor,naukri `
+  --skills Python SQL `
+  --degree B.Tech B.E. M.Tech BS MS `
+  --min-exp 0 `
+  --max-exp 2 `
+  --max-results 50
+```
+
+The CLI also accepts comma-separated values for options that support lists.
+
+## Output
+
+The application writes the following local files:
+
+- `jobs.db`: SQLite database used by the dashboard.
+- `jobs_<timestamp>.csv`: portable tabular export.
+- `jobs_<timestamp>.json`: portable JSON export.
+
+These generated files are intentionally excluded from Git. Run a new extraction to regenerate them.
+
+## Data access and scraper notes
+
+Only collect pages and data you are permitted to access. Job-board markup, APIs, rate limits, and access policies change frequently. The scraper handles common blocks and continues where possible, but it cannot guarantee coverage or bypass CAPTCHAs and access challenges. Treat public proxies as untrusted and never use them with credentials or sensitive traffic.
+
+## Project layout
+
+- `app.py`: Streamlit interface and dashboard.
+- `main.py`: command-line orchestration.
+- `scraper.py`: JobSpy and browser collection strategies.
+- `parser.py`: qualification, skill, experience, and work-mode extraction.
+- `filter.py`: qualification, skill, seniority, and experience filtering.
+- `storage.py`: SQLite, CSV, and JSON persistence.
+- `proxy_manager.py`: optional public proxy validation.

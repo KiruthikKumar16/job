@@ -1,0 +1,306 @@
+"""Interactive Streamlit UI for the job scraping and analytics pipeline."""
+from __future__ import annotations
+
+import ast
+import io
+import json
+import logging
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Callable, Iterator
+
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+from filter import filter_jobs
+from parser import enrich_jobs
+from scraper import INDIA_PLATFORMS, NORMALIZED_COLUMNS, fetch_jobs
+from storage import save_to_files, save_to_sqlite
+
+BASE_DIR = Path(__file__).resolve().parent
+DATABASE_PATH = BASE_DIR / "jobs.db"
+PLATFORM_LABELS = {
+    "LinkedIn": "linkedin",
+    "Indeed": "indeed",
+    "Glassdoor": "glassdoor",
+    "Naukri": "naukri",
+}
+LOCATION_OPTIONS = ["Bengaluru", "Hyderabad", "Pune", "Mumbai", "Chennai", "Delhi NCR"]
+DASHBOARD_COLUMNS = {
+    "title": "Title",
+    "company": "Company",
+    "location": "Location",
+    "qualification": "Parsed Qualification",
+    "extracted_skills": "Extracted Skills",
+    "seniority": "Seniority",
+    "min_exp": "Min Exp",
+    "job_url": "Apply URL",
+}
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_jobs(database_path: str, data_directory: str) -> pd.DataFrame:
+    """Load the SQLite dataset, falling back to the newest portable export."""
+    database = Path(database_path)
+    if database.exists():
+        try:
+            with sqlite3.connect(database) as connection:
+                tables = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table'", connection)
+                if "jobs" in tables["name"].tolist():
+                    return _prepare_frame(pd.read_sql_query("SELECT * FROM jobs", connection))
+        except (OSError, sqlite3.Error, pd.errors.DatabaseError):
+            pass
+
+    directory = Path(data_directory)
+    exports = sorted(directory.glob("jobs_*.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if exports:
+        return _prepare_frame(pd.read_csv(exports[0]))
+    json_exports = sorted(directory.glob("jobs_*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if json_exports:
+        return _prepare_frame(pd.read_json(json_exports[0]))
+    return pd.DataFrame()
+
+
+def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    for column in ("title", "company", "location", "qualification", "seniority", "job_url"):
+        if column not in result.columns:
+            result[column] = ""
+        result[column] = result[column].fillna("").astype(str)
+    if "description" not in result.columns:
+        result["description"] = ""
+    result["description"] = result["description"].fillna("").astype(str)
+    if "extracted_skills" not in result.columns:
+        result["extracted_skills"] = [[] for _ in range(len(result))]
+    result["extracted_skills"] = result["extracted_skills"].map(_parse_skills)
+    for column in ("min_exp", "max_exp"):
+        if column not in result.columns:
+            result[column] = pd.NA
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    result["qualification"] = result["qualification"].replace({"": "Degree Required"})
+    return result
+
+
+def _parse_skills(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(text)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        except (ValueError, TypeError, json.JSONDecodeError):
+            continue
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+class _LogBuffer(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(self.format(record))
+
+
+@contextmanager
+def capture_pipeline_logs() -> Iterator[_LogBuffer]:
+    handler = _LogBuffer()
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        yield handler
+    finally:
+        root.removeHandler(handler)
+
+
+def _parse_terms(raw_terms: str) -> list[str]:
+    return [term.strip() for term in raw_terms.split(",") if term.strip()]
+
+
+def _parse_proxies(raw_proxies: str) -> list[str] | None:
+    values = [value.strip() for value in raw_proxies.replace("\n", ",").split(",") if value.strip()]
+    return values or None
+
+
+def run_extraction(terms: list[str], locations: list[str], platforms: list[str], max_results: int,
+                   min_exp: float, max_exp: float, proxies: list[str] | None,
+                   progress_callback: Callable[[int, int, str], None] | None = None
+                   ) -> tuple[pd.DataFrame, int, int, list[str]]:
+    """Fetch each query independently so blocked sources cannot stall the UI."""
+    combinations = [(term, location, platform) for term in terms for location in locations for platform in platforms]
+    raw_frames: list[pd.DataFrame] = []
+    with capture_pipeline_logs() as logs:
+        for index, (term, location, platform) in enumerate(combinations, start=1):
+            if progress_callback:
+                progress_callback(index - 1, len(combinations), f"Collecting {platform.title()} listings for {location}")
+            try:
+                frame = fetch_jobs([term], [location], [platform], max_results=max_results, proxies=proxies)
+                if not frame.empty:
+                    raw_frames.append(frame)
+            except Exception as error:
+                logging.getLogger(__name__).warning(
+                    "Continuing after %s failed for %s at %s: %s", platform.title(), term, location, error,
+                )
+            if progress_callback:
+                progress_callback(index, len(combinations), f"Finished {platform.title()} for {location}")
+        raw = pd.concat(raw_frames, ignore_index=True) if raw_frames else pd.DataFrame(columns=NORMALIZED_COLUMNS)
+        if not raw.empty:
+            raw = raw.drop_duplicates(subset=["job_url"], keep="first").reset_index(drop=True)
+        enriched = enrich_jobs(raw)
+        save_to_sqlite(enriched, str(DATABASE_PATH), "jobs")
+        save_to_files(enriched, str(BASE_DIR / "jobs"))
+    selected = filter_jobs(enriched, min_exp=min_exp, max_exp=max_exp)
+    return selected, len(raw), len(enriched), logs.messages
+
+
+def show_scrape_section() -> None:
+    st.title("Scrape & Extract Data")
+    st.caption("Collect public job listings, enrich every record, and keep the dataset ready for analysis.")
+    with st.form("extraction_form", clear_on_submit=False):
+        terms_text = st.text_input("Job title / search terms", "Software Engineer, Data Engineer")
+        locations = st.multiselect("Locations", LOCATION_OPTIONS, default=["Bengaluru", "Hyderabad"])
+        platform_columns = st.columns(4)
+        platforms: list[str] = []
+        for column, label in zip(platform_columns, PLATFORM_LABELS, strict=True):
+            if column.checkbox(label, value=True):
+                platforms.append(PLATFORM_LABELS[label])
+        max_results = st.slider("Max results per search", 10, 200, 50, step=10)
+        experience_columns = st.columns(2)
+        min_exp = experience_columns[0].number_input("Min experience (years)", 0.0, 40.0, 0.0, 0.5)
+        max_exp = experience_columns[1].number_input("Max experience (years)", 0.0, 40.0, 40.0, 0.5)
+        with st.expander("Proxy configuration (optional)"):
+            proxy_text = st.text_area("Proxies", placeholder="host:port, user:pass@host:port", height=80)
+        submitted = st.form_submit_button("Start Extraction Pipeline", type="primary", use_container_width=True)
+
+    if not submitted:
+        return
+    if not _parse_terms(terms_text):
+        st.error("Enter at least one search term.")
+        return
+    if not locations or not platforms:
+        st.error("Select at least one location and platform.")
+        return
+    if min_exp > max_exp:
+        st.error("Minimum experience cannot exceed maximum experience.")
+        return
+
+    progress = st.progress(0, text="Starting extraction pipeline")
+    with st.status("Running extraction pipeline", expanded=True) as status:
+        try:
+            progress.progress(20, text="Collecting public listings")
+            records, raw_count, valid_count, logs = run_extraction(
+                _parse_terms(terms_text), locations, platforms, max_results, min_exp, max_exp,
+                _parse_proxies(proxy_text),
+                progress_callback=lambda completed, total, label: progress.progress(
+                    int((completed / total) * 90) if total else 90, text=label,
+                ),
+            )
+            progress.progress(100, text="Extraction complete")
+            for message in logs:
+                st.write(message)
+            status.update(label="Extraction complete", state="complete")
+            st.success(f"Scraped {raw_count:,} raw records and saved {valid_count:,} valid extracted records.")
+            st.info("The SQLite database and timestamped jobs CSV/JSON exports have been updated.")
+            load_jobs.clear()
+            st.dataframe(_display_frame(records), hide_index=True, use_container_width=True)
+        except Exception as error:
+            progress.empty()
+            status.update(label="Extraction completed with an error", state="error")
+            st.warning(f"The pipeline could not complete: {error}")
+
+
+def _display_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    columns = [column for column in DASHBOARD_COLUMNS if column in frame.columns]
+    display = frame[columns].copy().rename(columns=DASHBOARD_COLUMNS)
+    if "Extracted Skills" in display.columns:
+        display["Extracted Skills"] = display["Extracted Skills"].map(lambda values: ", ".join(values))
+    return display
+
+
+def show_dashboard() -> None:
+    st.title("Analytics Dashboard")
+    data = load_jobs(str(DATABASE_PATH), str(BASE_DIR))
+    if data.empty:
+        st.info("No extracted jobs found. Run the extraction pipeline first.")
+        return
+
+    st.sidebar.subheader("Dashboard filters")
+    qualifications = st.sidebar.multiselect("Qualification", sorted(data["qualification"].unique()))
+    skill_values = sorted({skill for skills in data["extracted_skills"] for skill in skills if skill != "Extracted from Title Only"})
+    skills = st.sidebar.multiselect("Skills", skill_values)
+    seniorities = st.sidebar.multiselect("Seniority bucket", ["Entry-Level", "Mid-Level", "Senior/Lead"], default=[])
+    locations = st.sidebar.multiselect("Location", sorted(value for value in data["location"].unique() if value))
+
+    filtered = data.copy()
+    if qualifications:
+        filtered = filtered[filtered["qualification"].isin(qualifications)]
+    if skills:
+        filtered = filtered[filtered["extracted_skills"].map(lambda values: all(skill in values for skill in skills))]
+    if seniorities:
+        filtered = filtered[filtered["seniority"].isin(seniorities)]
+    if locations:
+        filtered = filtered[filtered["location"].isin(locations)]
+
+    metric_columns = st.columns(4)
+    skill_counts = _skill_counts(filtered)
+    qualification_counts = filtered["qualification"].value_counts()
+    metric_columns[0].metric("Total active jobs", f"{len(filtered):,}")
+    metric_columns[1].metric("Top demanded skill", skill_counts.index[0] if not skill_counts.empty else "None")
+    metric_columns[2].metric("Most common qualification", qualification_counts.index[0] if not qualification_counts.empty else "None")
+    average_exp = filtered["min_exp"].mean()
+    metric_columns[3].metric("Average min experience", "Not specified" if pd.isna(average_exp) else f"{average_exp:.1f} years")
+
+    chart_columns = st.columns(2)
+    with chart_columns[0]:
+        qualification_chart = qualification_counts.rename_axis("Qualification").reset_index(name="Jobs")
+        st.plotly_chart(px.bar(qualification_chart, x="Qualification", y="Jobs", title="Exact qualification breakdown"), use_container_width=True)
+    with chart_columns[1]:
+        skill_chart = skill_counts.head(10).sort_values().rename_axis("Skill").reset_index(name="Jobs")
+        st.plotly_chart(px.bar(skill_chart, x="Jobs", y="Skill", orientation="h", title="Top skills demand"), use_container_width=True)
+
+    matrix = filtered.dropna(subset=["min_exp"]).copy()
+    if not matrix.empty:
+        st.plotly_chart(px.scatter(matrix, x="min_exp", y="seniority", hover_name="title", color="seniority", title="Experience vs seniority"), use_container_width=True)
+    else:
+        st.info("No numeric experience values are available for the current selection.")
+
+    st.subheader("Filtered job records")
+    display = _display_frame(filtered)
+    if "Apply URL" in display.columns:
+        st.dataframe(display, column_config={"Apply URL": st.column_config.LinkColumn("Apply URL")}, hide_index=True, use_container_width=True)
+    else:
+        st.dataframe(display, hide_index=True, use_container_width=True)
+    csv_data = display.to_csv(index=False).encode("utf-8")
+    st.download_button("Download filtered CSV", csv_data, "filtered_jobs.csv", "text/csv", use_container_width=True)
+
+
+def _skill_counts(frame: pd.DataFrame) -> pd.Series:
+    values = [skill for skills in frame["extracted_skills"] for skill in skills if skill != "Extracted from Title Only"]
+    return pd.Series(values, dtype="string").value_counts() if values else pd.Series(dtype="int64")
+
+
+def main() -> None:
+    st.set_page_config(page_title="Job Market Explorer", page_icon="J", layout="wide")
+    st.markdown("""
+        <style>
+        [data-testid="stMetric"] { border-left: 3px solid #0f766e; padding-left: 1rem; }
+        </style>
+    """, unsafe_allow_html=True)
+    section = st.sidebar.radio("Application", ["Scrape & Extract Data", "Analytics Dashboard"])
+    if section == "Scrape & Extract Data":
+        show_scrape_section()
+    else:
+        show_dashboard()
+
+
+if __name__ == "__main__":
+    main()

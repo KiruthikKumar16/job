@@ -1,0 +1,28 @@
+# Python environments and caches
+.venv/
+.venv312/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local application data and generated exports
+jobs.db
+job_export_*.csv
+job_export_*.json
+jobs_*.csv
+jobs_*.json
+
+# Local secrets and configuration
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# IDE and OS files
+.vscode/
+.idea/
+.amazonq/
+.DS_Store
+Thumbs.db
