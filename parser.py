@@ -121,7 +121,7 @@ def enrich_jobs(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _data_quality_score(row: pd.Series) -> int:
-    """Score available fields without penalizing intentionally title-only records."""
-    fields = ("title", "company", "location", "job_url", "qualification", "extracted_skills")
-    present = sum(bool(row.get(field)) for field in fields)
-    return round((present / len(fields)) * 100)
+    """Score source completeness; inferred fallback labels do not hide missing data."""
+    source_fields = ("title", "company", "location", "job_url", "description", "date_posted")
+    present = sum(bool(row.get(field)) for field in source_fields)
+    return round((present / len(source_fields)) * 100)

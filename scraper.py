@@ -144,6 +144,8 @@ def _jobspy_fetch(term: str, location: str, site: str, max_results: int | None, 
     }
     if site in {"indeed", "glassdoor"}:
         options["country_indeed"] = country
+    if site == "linkedin":
+        options["linkedin_fetch_description"] = True
     if hours_old is not None:
         options["hours_old"] = hours_old
     if proxies:
@@ -151,7 +153,10 @@ def _jobspy_fetch(term: str, location: str, site: str, max_results: int | None, 
         # user:password@host:port; use the same address format in --proxies.
         options["proxies"] = proxies
     result = scrape_jobs(**options)
-    return _normalise_jobspy(result if result is not None else pd.DataFrame(), site)
+    jobs = _normalise_jobspy(result if result is not None else pd.DataFrame(), site)
+    if not jobs.empty:
+        jobs["location"] = jobs["location"].replace("", request_location)
+    return jobs
 
 
 def _naukri_fetch(term: str, location: str, max_results: int | None) -> pd.DataFrame:

@@ -19,6 +19,7 @@ V2 is a Python job scraping, qualification extraction, filtering, persistence, a
 - Set a numeric maximum result count with a slider or drag the right endpoint to `No limit`.
 - Export files use the readable `job_market_export_<timestamp>` name.
 - Choose any local CSV from the Analytics data-source selector; flexible headers are mapped and re-enriched automatically.
+- LinkedIn description retrieval is enabled for new runs; older exports must be scraped again to populate fields that were previously unavailable.
 - Run regression tests in CI and package the app with Docker.
 
 ## Requirements
@@ -89,6 +90,8 @@ GitHub Actions runs the test suite and Python compilation checks for pushes and 
 ## Data access and scraper notes
 
 Only collect pages and data you are permitted to access. Job-board markup, APIs, rate limits, and access policies change frequently. The scraper handles common blocks and continues where possible, but it cannot guarantee coverage or bypass CAPTCHAs and access challenges. Treat public proxies as untrusted and never use them with credentials or sensitive traffic.
+
+Some fields depend on what each source returns. Descriptions, posting dates, and salary values may be unavailable because a job board hides them, blocks detail requests, or does not expose them in its public result. The app preserves those records, uses title-based fallback extraction where possible, and reports source completeness through `data_quality_score`.
 
 ## Project layout
 
