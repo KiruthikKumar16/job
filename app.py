@@ -8,7 +8,7 @@ import logging
 import sqlite3
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 from uuid import uuid4
@@ -150,6 +150,10 @@ def _parse_proxies(raw_proxies: str) -> list[str] | None:
     return values or None
 
 
+def _window_hours(amount: float, unit: str) -> int:
+    return max(1, round(amount * (24 if unit == "Days" else 1)))
+
+
 def run_extraction(terms: list[str], locations: list[str], platforms: list[str], max_results: int,
                    min_exp: float, max_exp: float, proxies: list[str] | None,
                    hours_old: int | None = None,
@@ -229,10 +233,13 @@ def show_scrape_section() -> None:
         max_results = st.slider("Max results per search", 10, 200, 50, step=10)
         freshness = st.selectbox(
             "Jobs posted within",
-            options=["Any time", "Past 12 hours", "Past 2 days", "Past 7 days"],
+            options=["Any time", "Past 12 hours", "Past 2 days", "Past 7 days", "Custom"],
             index=2,
             help="Limit results to recent postings when the source provides a posting date.",
         )
+        custom_time_columns = st.columns(2)
+        custom_amount = custom_time_columns[0].number_input("Custom time", 1.0, 365.0, 3.0, 1.0, disabled=freshness != "Custom")
+        custom_unit = custom_time_columns[1].selectbox("Custom unit", ["Days", "Hours"], disabled=freshness != "Custom")
         experience_columns = st.columns(2)
         min_exp = experience_columns[0].number_input("Min experience (years)", 0.0, 40.0, 0.0, 0.5)
         max_exp = experience_columns[1].number_input("Max experience (years)", 0.0, 40.0, 40.0, 0.5)
@@ -254,7 +261,9 @@ def show_scrape_section() -> None:
         return
 
     progress = st.progress(0, text="Starting extraction pipeline")
-    freshness_hours = {"Any time": None, "Past 12 hours": 12, "Past 2 days": 48, "Past 7 days": 168}[freshness]
+    freshness_hours = {"Any time": None, "Past 12 hours": 12, "Past 2 days": 48, "Past 7 days": 168}.get(freshness)
+    if freshness == "Custom":
+        freshness_hours = _window_hours(custom_amount, custom_unit)
     with st.status("Running extraction pipeline", expanded=True) as status:
         try:
             progress.progress(20, text="Collecting public listings")
@@ -308,8 +317,20 @@ def show_dashboard() -> None:
     minimum_quality = st.sidebar.slider("Minimum data quality", 0, 100, 0, 5)
 
     posted_values = data["date_posted"].dropna()
+    posted_filter = st.sidebar.selectbox(
+        "Posted time filter", ["Any time", "Past 12 hours", "Past 2 days", "Past 7 days", "Custom window", "Custom date range"],
+        index=0,
+    )
+    dashboard_hours = {"Past 12 hours": 12, "Past 2 days": 48, "Past 7 days": 168}.get(posted_filter)
+    dashboard_amount = 3.0
+    dashboard_unit = "Days"
+    if posted_filter == "Custom window":
+        dashboard_time_columns = st.sidebar.columns(2)
+        dashboard_amount = dashboard_time_columns[0].number_input("Window", 1.0, 365.0, 3.0, 1.0, key="dashboard_window")
+        dashboard_unit = dashboard_time_columns[1].selectbox("Unit", ["Days", "Hours"], key="dashboard_unit")
+        dashboard_hours = _window_hours(dashboard_amount, dashboard_unit)
     posted_range = None
-    if not posted_values.empty:
+    if posted_filter == "Custom date range" and not posted_values.empty:
         posted_range = st.sidebar.date_input(
             "Posted date range", value=(posted_values.min().date(), posted_values.max().date()),
             min_value=posted_values.min().date(), max_value=posted_values.max().date(),
@@ -331,6 +352,9 @@ def show_dashboard() -> None:
     if work_modes:
         filtered = filtered[filtered["work_mode"].isin(work_modes)]
     filtered = filtered[filtered["data_quality_score"] >= minimum_quality]
+    if dashboard_hours is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=dashboard_hours)
+        filtered = filtered[filtered["date_posted"].ge(cutoff) | filtered["date_posted"].isna()]
     if posted_range and len(posted_range) == 2:
         start_date, end_date = posted_range
         posted_dates = filtered["date_posted"].dt.date
