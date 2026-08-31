@@ -7,8 +7,11 @@ import json
 import logging
 import sqlite3
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
+from uuid import uuid4
 
 import pandas as pd
 import plotly.express as px
@@ -17,7 +20,7 @@ import streamlit as st
 from filter import filter_jobs
 from parser import enrich_jobs
 from scraper import INDIA_PLATFORMS, NORMALIZED_COLUMNS, fetch_jobs
-from storage import save_to_files, save_to_sqlite
+from storage import load_extraction_runs, save_extraction_run, save_to_files, save_to_sqlite
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_PATH = BASE_DIR / "jobs.db"
@@ -29,6 +32,7 @@ PLATFORM_LABELS = {
 }
 LOCATION_OPTIONS = ["Bengaluru", "Hyderabad", "Pune", "Mumbai", "Chennai", "Delhi NCR"]
 DASHBOARD_COLUMNS = {
+    "site": "Source",
     "title": "Title",
     "company": "Company",
     "location": "Location",
@@ -36,6 +40,10 @@ DASHBOARD_COLUMNS = {
     "extracted_skills": "Extracted Skills",
     "seniority": "Seniority",
     "min_exp": "Min Exp",
+    "max_exp": "Max Exp",
+    "work_mode": "Work Mode",
+    "data_quality_score": "Quality Score",
+    "date_posted": "Posted",
     "job_url": "Apply URL",
 }
 
@@ -65,7 +73,7 @@ def load_jobs(database_path: str, data_directory: str) -> pd.DataFrame:
 
 def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
-    for column in ("title", "company", "location", "qualification", "seniority", "job_url"):
+    for column in ("site", "title", "company", "location", "qualification", "seniority", "job_url", "work_mode"):
         if column not in result.columns:
             result[column] = ""
         result[column] = result[column].fillna("").astype(str)
@@ -79,6 +87,12 @@ def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
         if column not in result.columns:
             result[column] = pd.NA
         result[column] = pd.to_numeric(result[column], errors="coerce")
+    if "data_quality_score" not in result.columns:
+        result["data_quality_score"] = 0
+    result["data_quality_score"] = pd.to_numeric(result["data_quality_score"], errors="coerce").fillna(0)
+    if "date_posted" not in result.columns:
+        result["date_posted"] = pd.NaT
+    result["date_posted"] = pd.to_datetime(result["date_posted"], errors="coerce", utc=True)
     result["qualification"] = result["qualification"].replace({"": "Degree Required"})
     return result
 
@@ -137,29 +151,49 @@ def run_extraction(terms: list[str], locations: list[str], platforms: list[str],
                    ) -> tuple[pd.DataFrame, int, int, list[str]]:
     """Fetch each query independently so blocked sources cannot stall the UI."""
     combinations = [(term, location, platform) for term in terms for location in locations for platform in platforms]
+    started_at = datetime.now(timezone.utc)
     raw_frames: list[pd.DataFrame] = []
+    platform_status: dict[str, str] = {}
     with capture_pipeline_logs() as logs:
-        for index, (term, location, platform) in enumerate(combinations, start=1):
-            if progress_callback:
-                progress_callback(index - 1, len(combinations), f"Collecting {platform.title()} listings for {location}")
+        def collect_one(combination: tuple[str, str, str]) -> tuple[tuple[str, str, str], pd.DataFrame | None, str]:
+            term, location, platform = combination
             try:
                 frame = fetch_jobs([term], [location], [platform], max_results=max_results, proxies=proxies)
-                if not frame.empty:
-                    raw_frames.append(frame)
+                return combination, frame, "success" if not frame.empty else "empty"
             except Exception as error:
                 logging.getLogger(__name__).warning(
                     "Continuing after %s failed for %s at %s: %s", platform.title(), term, location, error,
                 )
-            if progress_callback:
-                progress_callback(index, len(combinations), f"Finished {platform.title()} for {location}")
+                return combination, None, f"failed: {error}"
+
+        worker_count = min(6, max(1, len(combinations)))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(collect_one, combination) for combination in combinations]
+            for index, future in enumerate(as_completed(futures), start=1):
+                (term, location, platform), frame, status = future.result()
+                platform_status[f"{platform}:{location}:{term}"] = status
+                if frame is not None and not frame.empty:
+                    raw_frames.append(frame)
+                if progress_callback:
+                    progress_callback(index, len(combinations), f"Finished {platform.title()} for {location}")
         raw = pd.concat(raw_frames, ignore_index=True) if raw_frames else pd.DataFrame(columns=NORMALIZED_COLUMNS)
         if not raw.empty:
             raw = raw.drop_duplicates(subset=["job_url"], keep="first").reset_index(drop=True)
         enriched = enrich_jobs(raw)
         save_to_sqlite(enriched, str(DATABASE_PATH), "jobs")
         save_to_files(enriched, str(BASE_DIR / "jobs"))
+        valid_count = int(enriched.get("title", pd.Series(dtype=str)).astype(str).str.strip().ne("").sum())
+        save_extraction_run(str(DATABASE_PATH), {
+            "run_id": str(uuid4()),
+            "started_at": started_at.isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "raw_count": len(raw),
+            "valid_count": valid_count,
+            "status": "completed" if all(value in {"success", "empty"} for value in platform_status.values()) else "partial",
+            "platform_status": platform_status,
+        })
     selected = filter_jobs(enriched, min_exp=min_exp, max_exp=max_exp)
-    return selected, len(raw), len(enriched), logs.messages
+    return selected, len(raw), valid_count, logs.messages
 
 
 def show_scrape_section() -> None:
@@ -234,13 +268,26 @@ def show_dashboard() -> None:
         return
 
     st.sidebar.subheader("Dashboard filters")
+    sources = st.sidebar.multiselect("Source", sorted(data["site"].unique()))
     qualifications = st.sidebar.multiselect("Qualification", sorted(data["qualification"].unique()))
     skill_values = sorted({skill for skills in data["extracted_skills"] for skill in skills if skill != "Extracted from Title Only"})
     skills = st.sidebar.multiselect("Skills", skill_values)
     seniorities = st.sidebar.multiselect("Seniority bucket", ["Entry-Level", "Mid-Level", "Senior/Lead"], default=[])
     locations = st.sidebar.multiselect("Location", sorted(value for value in data["location"].unique() if value))
+    work_modes = st.sidebar.multiselect("Work mode", sorted(value for value in data["work_mode"].unique() if value))
+    minimum_quality = st.sidebar.slider("Minimum data quality", 0, 100, 0, 5)
+
+    posted_values = data["date_posted"].dropna()
+    posted_range = None
+    if not posted_values.empty:
+        posted_range = st.sidebar.date_input(
+            "Posted date range", value=(posted_values.min().date(), posted_values.max().date()),
+            min_value=posted_values.min().date(), max_value=posted_values.max().date(),
+        )
 
     filtered = data.copy()
+    if sources:
+        filtered = filtered[filtered["site"].isin(sources)]
     if qualifications:
         filtered = filtered[filtered["qualification"].isin(qualifications)]
     if skills:
@@ -249,6 +296,13 @@ def show_dashboard() -> None:
         filtered = filtered[filtered["seniority"].isin(seniorities)]
     if locations:
         filtered = filtered[filtered["location"].isin(locations)]
+    if work_modes:
+        filtered = filtered[filtered["work_mode"].isin(work_modes)]
+    filtered = filtered[filtered["data_quality_score"] >= minimum_quality]
+    if posted_range and len(posted_range) == 2:
+        start_date, end_date = posted_range
+        posted_dates = filtered["date_posted"].dt.date
+        filtered = filtered[posted_dates.between(start_date, end_date) | filtered["date_posted"].isna()]
 
     metric_columns = st.columns(4)
     skill_counts = _skill_counts(filtered)
@@ -281,6 +335,13 @@ def show_dashboard() -> None:
         st.dataframe(display, hide_index=True, use_container_width=True)
     csv_data = display.to_csv(index=False).encode("utf-8")
     st.download_button("Download filtered CSV", csv_data, "filtered_jobs.csv", "text/csv", use_container_width=True)
+
+    runs = load_extraction_runs(str(DATABASE_PATH))
+    if not runs.empty:
+        with st.expander("Recent extraction health"):
+            health = runs[["started_at", "raw_count", "valid_count", "status"]].copy()
+            health.columns = ["Started", "Raw Records", "Valid Records", "Status"]
+            st.dataframe(health, hide_index=True, use_container_width=True)
 
 
 def _skill_counts(frame: pd.DataFrame) -> pd.Series:

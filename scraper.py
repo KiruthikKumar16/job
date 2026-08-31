@@ -24,6 +24,7 @@ NORMALIZED_COLUMNS = [
     "site", "title", "company", "location", "job_url", "description",
     "date_posted", "salary_min", "salary_max", "currency",
 ]
+METADATA_COLUMNS = ["search_term", "search_location", "scraped_at"]
 SUPPORTED_PLATFORMS = {"linkedin", "indeed", "glassdoor", "naukri", "zip_recruiter"}
 INDIA_PLATFORMS = ("linkedin", "indeed", "glassdoor", "naukri")
 NAUKRI_USER_AGENTS = (
@@ -117,6 +118,14 @@ def _normalise_jobspy(raw: pd.DataFrame, site: str) -> pd.DataFrame:
     return pd.DataFrame.from_records(records, columns=NORMALIZED_COLUMNS)
 
 
+def _annotate_jobs(frame: pd.DataFrame, term: str, location: str) -> pd.DataFrame:
+    result = frame.copy()
+    result["search_term"] = term
+    result["search_location"] = location
+    result["scraped_at"] = datetime.now(timezone.utc).isoformat()
+    return result
+
+
 def _is_block_error(error: Exception) -> bool:
     message = str(error).lower()
     markers = ("403", "429", "rate limit", "captcha", "access denied", "anti-bot", "blocked")
@@ -153,7 +162,7 @@ def _naukri_fetch(term: str, location: str, max_results: int) -> pd.DataFrame:
             LOGGER.warning("Naukri rejected the request with HTTP 406; skipping this query")
             return _empty_frame()
         response.raise_for_status()
-        return _extract_browser_cards(response.text, "naukri", location, max_results)
+        return _annotate_jobs(_extract_browser_cards(response.text, "naukri", location, max_results), term, location)
     except requests.RequestException as error:
         if "406" in str(error):
             LOGGER.warning("Naukri returned HTTP 406; skipping this query")
@@ -272,6 +281,7 @@ def fetch_jobs(search_terms: list[str], locations: list[str], platforms: list[st
                 jobs = _naukri_fetch(term, location, max_results)
             else:
                 jobs = _jobspy_fetch(term, location, site, max_results, active_proxies, country)
+                jobs = _annotate_jobs(jobs, term, location)
             frames.append(jobs)
             if jobs.empty and site in {"glassdoor", "naukri"}:
                 LOGGER.warning("%s returned no records for %s; its response may have been blocked or rejected", site.title(), location)
@@ -301,7 +311,7 @@ def fetch_jobs(search_terms: list[str], locations: list[str], platforms: list[st
                 LOGGER.error("Browser fallback failed for %s: %s", site, fallback_error)
     if not frames:
         return _empty_frame()
-    result = pd.concat(frames, ignore_index=True).reindex(columns=NORMALIZED_COLUMNS)
+    result = pd.concat(frames, ignore_index=True).reindex(columns=NORMALIZED_COLUMNS + METADATA_COLUMNS)
     result["date_posted"] = pd.to_datetime(result["date_posted"], errors="coerce", utc=True)
     result = result.drop_duplicates(subset=["job_url"], keep="first")
     return result.reset_index(drop=True)

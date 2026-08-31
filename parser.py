@@ -115,4 +115,13 @@ def enrich_jobs(df: pd.DataFrame) -> pd.DataFrame:
     result["max_exp"] = [item["max_exp"] for item in experience]
     result["seniority"] = [item["seniority"] for item in experience]
     result["work_mode"] = descriptions.map(extract_work_mode)
+    result["description_missing"] = descriptions.str.strip().eq("")
+    result["data_quality_score"] = result.apply(_data_quality_score, axis=1)
     return result
+
+
+def _data_quality_score(row: pd.Series) -> int:
+    """Score available fields without penalizing intentionally title-only records."""
+    fields = ("title", "company", "location", "job_url", "qualification", "extracted_skills")
+    present = sum(bool(row.get(field)) for field in fields)
+    return round((present / len(fields)) * 100)

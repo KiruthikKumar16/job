@@ -1,11 +1,12 @@
 # Use CPython 3.10, 3.11, or 3.12. JobSpy currently pins NumPy 1.26.3,
 # which has no Python 3.13/3.14 Windows wheel.
 python-jobspy==1.1.82
-pandas
-playwright
-playwright-stealth
-beautifulsoup4
-lxml
-requests[socks]
-streamlit
-plotly
+pandas==2.3.3
+playwright==1.62.0
+playwright-stealth==2.0.3
+beautifulsoup4==4.15.0
+lxml==6.1.2
+requests[socks]==2.34.2
+streamlit==1.62.0
+plotly==7.0.0
+pytest==8.4.2

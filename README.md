@@ -1,6 +1,6 @@
 # Job Market Explorer
 
-V1 is a Python job scraping, qualification extraction, filtering, persistence, and Streamlit analytics application for public job listings.
+V2 is a Python job scraping, qualification extraction, filtering, persistence, and Streamlit analytics application for public job listings. V1 remains the baseline commit in Git history.
 
 ## Features
 
@@ -11,6 +11,10 @@ V1 is a Python job scraping, qualification extraction, filtering, persistence, a
 - Classify experience, seniority, and work mode.
 - Persist enriched data to SQLite and timestamped CSV/JSON exports.
 - Explore qualifications, skills, locations, seniority, and experience in the Streamlit dashboard.
+- Run independent platform/location searches concurrently with per-query progress and graceful partial failures.
+- Track source metadata, data-quality scores, missing descriptions, and extraction-run history.
+- Filter the dashboard by source, work mode, posted date, and minimum data quality.
+- Run regression tests in CI and package the app with Docker.
 
 ## Requirements
 
@@ -60,6 +64,22 @@ The application writes the following local files:
 - `jobs_<timestamp>.json`: portable JSON export.
 
 These generated files are intentionally excluded from Git. Run a new extraction to regenerate them.
+
+## V2 development checks
+
+```powershell
+.venv312\Scripts\python.exe -m pytest -q
+.venv312\Scripts\python.exe -m py_compile app.py filter.py main.py parser.py scraper.py storage.py
+```
+
+Build and run the container:
+
+```powershell
+docker build -t job-market-explorer .
+docker run --rm -p 8501:8501 job-market-explorer
+```
+
+GitHub Actions runs the test suite and Python compilation checks for pushes and pull requests targeting `main`.
 
 ## Data access and scraper notes
 

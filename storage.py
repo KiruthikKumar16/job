@@ -44,6 +44,35 @@ def save_to_sqlite(df: pd.DataFrame, db_path: str = "jobs.db", table_name: str =
         connection.executemany(query, frame.where(pd.notna(frame), None).itertuples(index=False, name=None))
 
 
+def save_extraction_run(db_path: str, run: dict[str, object]) -> None:
+    """Persist one extraction summary for dashboard health and audit history."""
+    columns = ["run_id", "started_at", "finished_at", "raw_count", "valid_count", "status", "platform_status"]
+    values = [run.get(column) for column in columns]
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS extraction_runs ("
+            "run_id TEXT PRIMARY KEY, started_at TEXT, finished_at TEXT, raw_count INTEGER, "
+            "valid_count INTEGER, status TEXT, platform_status TEXT)"
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO extraction_runs "
+            "(run_id, started_at, finished_at, raw_count, valid_count, status, platform_status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [json.dumps(value) if isinstance(value, (dict, list)) else value for value in values],
+        )
+
+
+def load_extraction_runs(db_path: str, limit: int = 20) -> pd.DataFrame:
+    """Read recent extraction summaries, returning an empty frame if unavailable."""
+    try:
+        with sqlite3.connect(db_path) as connection:
+            return pd.read_sql_query(
+                "SELECT * FROM extraction_runs ORDER BY started_at DESC LIMIT ?", connection, params=(limit,)
+            )
+    except (OSError, sqlite3.Error, pd.errors.DatabaseError):
+        return pd.DataFrame()
+
+
 def save_to_files(df: pd.DataFrame, base_filename: str = "job_export") -> tuple[Path, Path]:
     """Write UTF-8 timestamped JSON and CSV exports and return their paths."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
