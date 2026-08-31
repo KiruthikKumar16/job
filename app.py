@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from filter import filter_jobs
@@ -495,7 +496,33 @@ def show_dashboard() -> None:
 
     matrix = filtered.dropna(subset=["min_exp"]).copy()
     if not matrix.empty:
-        st.plotly_chart(px.scatter(matrix, x="min_exp", y="seniority", hover_name="title", color="seniority", title="Experience vs seniority"), use_container_width=True)
+        seniority_order = ["Entry-Level", "Mid-Level", "Senior/Lead", "Not Specified"]
+        figure = go.Figure()
+        for bucket in seniority_order:
+            bucket_frame = matrix[matrix["seniority"].eq(bucket)]
+            if bucket_frame.empty:
+                continue
+            figure.add_trace(go.Box(
+                x=bucket_frame["min_exp"],
+                y=[bucket] * len(bucket_frame),
+                name=bucket,
+                orientation="h",
+                boxpoints="all",
+                jitter=0.35,
+                pointpos=0,
+                marker={"size": 5, "opacity": 0.55},
+                line={"width": 1.5},
+                customdata=bucket_frame[["title", "company"]].fillna("").to_numpy(),
+                hovertemplate="%{customdata[0]}<br>%{customdata[1]}<br>Min experience: %{x} years<extra></extra>",
+            ))
+        figure.update_layout(
+            title="Experience vs seniority: box plot with jittered job points",
+            xaxis_title="Minimum experience (years)",
+            yaxis_title="Seniority",
+            showlegend=False,
+            boxmode="group",
+        )
+        st.plotly_chart(figure, use_container_width=True)
     else:
         st.info("No numeric experience values are available for the current selection.")
 
