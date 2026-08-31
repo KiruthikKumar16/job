@@ -16,6 +16,7 @@ V2 is a Python job scraping, qualification extraction, filtering, persistence, a
 - Filter the dashboard by source, work mode, posted date, and minimum data quality.
 - Select multiple default job roles such as Data Analyst, Data Engineer, and Full Stack Developer in both app sections.
 - Use preset or custom hours/days posting windows during extraction and in Analytics, including custom calendar ranges.
+- Set a numeric maximum result count with a slider or drag the right endpoint to `No limit`.
 - Run regression tests in CI and package the app with Docker.
 
 ## Requirements

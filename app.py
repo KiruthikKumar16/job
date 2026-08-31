@@ -269,9 +269,15 @@ def show_scrape_section() -> None:
         for column, label in zip(platform_columns, PLATFORM_LABELS, strict=True):
             if column.checkbox(label, value=False, key=f"scrape_{PLATFORM_LABELS[label]}"):
                 platforms.append(PLATFORM_LABELS[label])
-        result_options: list[int | str] = ["All available"] + list(range(10, 201, 10))
-        result_choice = st.selectbox("Max results per search", result_options, index=0, key="scrape_max_results")
-        max_results = None if result_choice == "All available" else int(result_choice)
+        result_options: list[int | str] = list(range(10, 201, 10)) + ["No limit"]
+        result_choice = st.select_slider(
+            "Max results per search",
+            options=result_options,
+            value="No limit",
+            key="scrape_max_results",
+            help="Drag to the far right for No limit, or choose a numeric maximum.",
+        )
+        max_results = None if result_choice == "No limit" else int(result_choice)
         experience_columns = st.columns(2)
         min_exp = experience_columns[0].number_input("Min experience (years)", 0.0, 40.0, 0.0, 0.5, key="scrape_min_exp")
         max_exp = experience_columns[1].number_input("Max experience (years)", 0.0, 40.0, 40.0, 0.5, key="scrape_max_exp")
