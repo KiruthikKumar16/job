@@ -11,6 +11,8 @@ __pycache__/
 jobs.db
 job_export_*.csv
 job_export_*.json
+job_market_export_*.csv
+job_market_export_*.json
 jobs_*.csv
 jobs_*.json
 
