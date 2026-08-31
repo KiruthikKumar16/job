@@ -154,6 +154,12 @@ def _window_hours(amount: float, unit: str) -> int:
     return max(1, round(amount * (24 if unit == "Days" else 1)))
 
 
+def _reset_state(keys: list[str]) -> None:
+    for key in keys:
+        st.session_state.pop(key, None)
+    st.rerun()
+
+
 def run_extraction(terms: list[str], locations: list[str], platforms: list[str], max_results: int,
                    min_exp: float, max_exp: float, proxies: list[str] | None,
                    hours_old: int | None = None,
@@ -212,39 +218,53 @@ def run_extraction(terms: list[str], locations: list[str], platforms: list[str],
 def show_scrape_section() -> None:
     st.title("Scrape & Extract Data")
     st.caption("Collect public job listings, enrich every record, and keep the dataset ready for analysis.")
+    if st.button("Reset extraction selections", key="reset_extraction", type="secondary"):
+        _reset_state([
+            "scrape_roles", "scrape_custom_roles", "scrape_locations", "scrape_linkedin", "scrape_indeed",
+            "scrape_glassdoor", "scrape_naukri", "scrape_max_results", "scrape_freshness", "scrape_custom_amount",
+            "scrape_custom_unit", "scrape_min_exp", "scrape_max_exp", "scrape_proxy_text",
+        ])
+
+    freshness = st.selectbox(
+        "Jobs posted within",
+        options=["Any time", "Past 12 hours", "Past 2 days", "Past 7 days", "Custom"],
+        index=2,
+        key="scrape_freshness",
+        help="Limit results to recent postings when the source provides a posting date.",
+    )
+    custom_time_columns = st.columns(2)
+    custom_amount = custom_time_columns[0].number_input(
+        "Custom time", 1.0, 365.0, 3.0, 1.0, key="scrape_custom_amount", disabled=freshness != "Custom",
+    )
+    custom_unit = custom_time_columns[1].selectbox(
+        "Custom unit", ["Days", "Hours"], key="scrape_custom_unit", disabled=freshness != "Custom",
+    )
     with st.form("extraction_form", clear_on_submit=False):
         selected_roles = st.multiselect(
             "Job roles / search terms",
             ROLE_OPTIONS,
             default=["Data Analyst", "Data Engineer", "Full Stack Developer"],
+            key="scrape_roles",
             help="Select multiple roles to search in one extraction run.",
         )
         custom_roles = st.text_input(
             "Additional roles (optional)",
             placeholder="e.g. DevOps Engineer, BI Analyst",
+            key="scrape_custom_roles",
             help="Add roles not listed above, separated by commas.",
         )
-        locations = st.multiselect("Locations", LOCATION_OPTIONS, default=["Bengaluru", "Hyderabad"])
+        locations = st.multiselect("Locations", LOCATION_OPTIONS, default=["Bengaluru", "Hyderabad"], key="scrape_locations")
         platform_columns = st.columns(4)
         platforms: list[str] = []
         for column, label in zip(platform_columns, PLATFORM_LABELS, strict=True):
-            if column.checkbox(label, value=True):
+            if column.checkbox(label, value=True, key=f"scrape_{PLATFORM_LABELS[label]}"):
                 platforms.append(PLATFORM_LABELS[label])
-        max_results = st.slider("Max results per search", 10, 200, 50, step=10)
-        freshness = st.selectbox(
-            "Jobs posted within",
-            options=["Any time", "Past 12 hours", "Past 2 days", "Past 7 days", "Custom"],
-            index=2,
-            help="Limit results to recent postings when the source provides a posting date.",
-        )
-        custom_time_columns = st.columns(2)
-        custom_amount = custom_time_columns[0].number_input("Custom time", 1.0, 365.0, 3.0, 1.0, disabled=freshness != "Custom")
-        custom_unit = custom_time_columns[1].selectbox("Custom unit", ["Days", "Hours"], disabled=freshness != "Custom")
+        max_results = st.slider("Max results per search", 10, 200, 50, step=10, key="scrape_max_results")
         experience_columns = st.columns(2)
-        min_exp = experience_columns[0].number_input("Min experience (years)", 0.0, 40.0, 0.0, 0.5)
-        max_exp = experience_columns[1].number_input("Max experience (years)", 0.0, 40.0, 40.0, 0.5)
+        min_exp = experience_columns[0].number_input("Min experience (years)", 0.0, 40.0, 0.0, 0.5, key="scrape_min_exp")
+        max_exp = experience_columns[1].number_input("Max experience (years)", 0.0, 40.0, 40.0, 0.5, key="scrape_max_exp")
         with st.expander("Proxy configuration (optional)"):
-            proxy_text = st.text_area("Proxies", placeholder="host:port, user:pass@host:port", height=80)
+            proxy_text = st.text_area("Proxies", placeholder="host:port, user:pass@host:port", height=80, key="scrape_proxy_text")
         submitted = st.form_submit_button("Start Extraction Pipeline", type="primary", use_container_width=True)
 
     if not submitted:
@@ -299,27 +319,34 @@ def _display_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 def show_dashboard() -> None:
     st.title("Analytics Dashboard")
+    if st.sidebar.button("Reset dashboard selections", key="reset_dashboard", type="secondary"):
+        _reset_state([
+            "dashboard_source", "dashboard_role", "dashboard_qualification", "dashboard_skills", "dashboard_seniority",
+            "dashboard_location", "dashboard_work_mode", "dashboard_quality", "dashboard_posted_filter",
+            "dashboard_window", "dashboard_unit", "dashboard_posted_range",
+        ])
     data = load_jobs(str(DATABASE_PATH), str(BASE_DIR))
     if data.empty:
         st.info("No extracted jobs found. Run the extraction pipeline first.")
         return
 
     st.sidebar.subheader("Dashboard filters")
-    sources = st.sidebar.multiselect("Source", sorted(data["site"].unique()))
+    sources = st.sidebar.multiselect("Source", sorted(data["site"].unique()), key="dashboard_source")
     roles = sorted(value for value in data["search_term"].unique() if value)
-    selected_roles = st.sidebar.multiselect("Job role", roles)
-    qualifications = st.sidebar.multiselect("Qualification", sorted(data["qualification"].unique()))
+    selected_roles = st.sidebar.multiselect("Job role", roles, key="dashboard_role")
+    qualifications = st.sidebar.multiselect("Qualification", sorted(data["qualification"].unique()), key="dashboard_qualification")
     skill_values = sorted({skill for skills in data["extracted_skills"] for skill in skills if skill != "Extracted from Title Only"})
-    skills = st.sidebar.multiselect("Skills", skill_values)
-    seniorities = st.sidebar.multiselect("Seniority bucket", ["Entry-Level", "Mid-Level", "Senior/Lead"], default=[])
-    locations = st.sidebar.multiselect("Location", sorted(value for value in data["location"].unique() if value))
-    work_modes = st.sidebar.multiselect("Work mode", sorted(value for value in data["work_mode"].unique() if value))
-    minimum_quality = st.sidebar.slider("Minimum data quality", 0, 100, 0, 5)
+    skills = st.sidebar.multiselect("Skills", skill_values, key="dashboard_skills")
+    seniorities = st.sidebar.multiselect("Seniority bucket", ["Entry-Level", "Mid-Level", "Senior/Lead"], default=[], key="dashboard_seniority")
+    locations = st.sidebar.multiselect("Location", sorted(value for value in data["location"].unique() if value), key="dashboard_location")
+    work_modes = st.sidebar.multiselect("Work mode", sorted(value for value in data["work_mode"].unique() if value), key="dashboard_work_mode")
+    minimum_quality = st.sidebar.slider("Minimum data quality", 0, 100, 0, 5, key="dashboard_quality")
 
     posted_values = data["date_posted"].dropna()
     posted_filter = st.sidebar.selectbox(
         "Posted time filter", ["Any time", "Past 12 hours", "Past 2 days", "Past 7 days", "Custom window", "Custom date range"],
         index=0,
+        key="dashboard_posted_filter",
     )
     dashboard_hours = {"Past 12 hours": 12, "Past 2 days": 48, "Past 7 days": 168}.get(posted_filter)
     dashboard_amount = 3.0
@@ -334,6 +361,7 @@ def show_dashboard() -> None:
         posted_range = st.sidebar.date_input(
             "Posted date range", value=(posted_values.min().date(), posted_values.max().date()),
             min_value=posted_values.min().date(), max_value=posted_values.max().date(),
+            key="dashboard_posted_range",
         )
 
     filtered = data.copy()
