@@ -339,12 +339,6 @@ def _display_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 def show_dashboard() -> None:
     st.title("Analytics Dashboard")
-    if st.sidebar.button("Reset dashboard selections", key="reset_dashboard", type="secondary"):
-        _reset_state([
-            "dashboard_source", "dashboard_role", "dashboard_qualification", "dashboard_skills", "dashboard_seniority",
-            "dashboard_location", "dashboard_work_mode", "dashboard_quality", "dashboard_posted_filter",
-            "dashboard_window", "dashboard_unit", "dashboard_posted_range",
-        ])
     data = load_jobs(str(DATABASE_PATH), str(BASE_DIR))
     if data.empty:
         st.info("No extracted jobs found. Run the extraction pipeline first.")
@@ -383,6 +377,12 @@ def show_dashboard() -> None:
             min_value=posted_values.min().date(), max_value=posted_values.max().date(),
             key="dashboard_posted_range",
         )
+    if st.sidebar.button("Reset dashboard selections", key="reset_dashboard", type="secondary", use_container_width=True):
+        _reset_state([
+            "dashboard_source", "dashboard_role", "dashboard_qualification", "dashboard_skills", "dashboard_seniority",
+            "dashboard_location", "dashboard_work_mode", "dashboard_quality", "dashboard_posted_filter",
+            "dashboard_window", "dashboard_unit", "dashboard_posted_range",
+        ])
 
     filtered = data.copy()
     if sources:
