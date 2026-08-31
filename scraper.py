@@ -132,7 +132,7 @@ def _is_block_error(error: Exception) -> bool:
     return any(marker in message for marker in markers)
 
 
-def _jobspy_fetch(term: str, location: str, site: str, max_results: int, proxies: list[str] | None,
+def _jobspy_fetch(term: str, location: str, site: str, max_results: int | None, proxies: list[str] | None,
                   country: str, hours_old: int | None = None) -> pd.DataFrame:
     """Run one JobSpy query; imports lazily so non-scraping commands still work."""
     from jobspy import scrape_jobs  # python-jobspy
@@ -140,7 +140,7 @@ def _jobspy_fetch(term: str, location: str, site: str, max_results: int, proxies
     request_location = _normalise_glassdoor_location(location, country) if site == "glassdoor" else location
     options: dict[str, Any] = {
         "site_name": [site], "search_term": term, "location": request_location,
-        "results_wanted": max_results,
+        "results_wanted": max_results if max_results is not None else 10_000,
     }
     if site in {"indeed", "glassdoor"}:
         options["country_indeed"] = country
@@ -154,7 +154,7 @@ def _jobspy_fetch(term: str, location: str, site: str, max_results: int, proxies
     return _normalise_jobspy(result if result is not None else pd.DataFrame(), site)
 
 
-def _naukri_fetch(term: str, location: str, max_results: int) -> pd.DataFrame:
+def _naukri_fetch(term: str, location: str, max_results: int | None) -> pd.DataFrame:
     """Fetch Naukri's public search HTML with a persistent, polite session."""
     url = _browser_url(term=term, location=location, site="naukri", country="India")
     headers = {"User-Agent": random.choice(NAUKRI_USER_AGENTS), "Accept-Language": "en-IN,en;q=0.9"}
@@ -217,7 +217,7 @@ async def _playwright_fetch(term: str, location: str, site: str, max_results: in
     return _extract_browser_cards(html, site, location, max_results)
 
 
-def _extract_browser_cards(html: str, site: str, fallback_location: str, limit: int) -> pd.DataFrame:
+def _extract_browser_cards(html: str, site: str, fallback_location: str, limit: int | None) -> pd.DataFrame:
     """Use common job-card markup, keeping extraction tolerant of DOM changes."""
     soup = BeautifulSoup(html, "lxml")
     selectors = [
@@ -254,14 +254,14 @@ def _extract_browser_cards(html: str, site: str, fallback_location: str, limit: 
     return pd.DataFrame.from_records(records, columns=NORMALIZED_COLUMNS)
 
 
-def fetch_jobs(search_terms: list[str], locations: list[str], platforms: list[str], max_results: int = 50,
+def fetch_jobs(search_terms: list[str], locations: list[str], platforms: list[str], max_results: int | None = 50,
                proxies: list[str] | None = None, country: str = "India", hours_old: int | None = None) -> pd.DataFrame:
     """Fetch jobs for all query combinations, falling back after access blocks.
 
     A non-blocking primary failure is logged and skipped; a recognized block
     triggers Playwright for that exact platform/query combination.
     """
-    if not search_terms or not locations or max_results < 1:
+    if not search_terms or not locations or (max_results is not None and max_results < 1):
         return _empty_frame()
     proxies = _normalise_user_proxies(proxies)
     selected = [_normalise_site(item) for item in platforms]

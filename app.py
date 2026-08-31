@@ -92,14 +92,24 @@ def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
         if column not in result.columns:
             result[column] = pd.NA
         result[column] = pd.to_numeric(result[column], errors="coerce")
+    fallback_quality = result.apply(_quality_score, axis=1)
     if "data_quality_score" not in result.columns:
-        result["data_quality_score"] = 0
-    result["data_quality_score"] = pd.to_numeric(result["data_quality_score"], errors="coerce").fillna(0)
+        result["data_quality_score"] = fallback_quality
+    else:
+        result["data_quality_score"] = pd.to_numeric(result["data_quality_score"], errors="coerce")
+        result["data_quality_score"] = result["data_quality_score"].where(
+            result["data_quality_score"].gt(0), fallback_quality,
+        )
     if "date_posted" not in result.columns:
         result["date_posted"] = pd.NaT
     result["date_posted"] = pd.to_datetime(result["date_posted"], errors="coerce", utc=True)
     result["qualification"] = result["qualification"].replace({"": "Degree Required"})
     return result
+
+
+def _quality_score(row: pd.Series) -> int:
+    fields = ("title", "company", "location", "job_url", "qualification", "extracted_skills")
+    return round((sum(bool(row.get(field)) for field in fields) / len(fields)) * 100)
 
 
 def _parse_skills(value: object) -> list[str]:
@@ -234,16 +244,16 @@ def show_scrape_section() -> None:
     )
     custom_time_columns = st.columns(2)
     custom_amount = custom_time_columns[0].number_input(
-        "Custom time", 1.0, 365.0, 3.0, 1.0, key="scrape_custom_amount", disabled=freshness != "Custom",
+        "Window", 1.0, 365.0, 3.0, 1.0, key="scrape_custom_amount", disabled=freshness != "Custom",
     )
     custom_unit = custom_time_columns[1].selectbox(
-        "Custom unit", ["Days", "Hours"], key="scrape_custom_unit", disabled=freshness != "Custom",
+        "Unit", ["Days", "Hours"], key="scrape_custom_unit", disabled=freshness != "Custom",
     )
     with st.form("extraction_form", clear_on_submit=False):
         selected_roles = st.multiselect(
             "Job roles / search terms",
             ROLE_OPTIONS,
-            default=["Data Analyst", "Data Engineer", "Full Stack Developer"],
+            default=[],
             key="scrape_roles",
             help="Select multiple roles to search in one extraction run.",
         )
@@ -253,13 +263,15 @@ def show_scrape_section() -> None:
             key="scrape_custom_roles",
             help="Add roles not listed above, separated by commas.",
         )
-        locations = st.multiselect("Locations", LOCATION_OPTIONS, default=["Bengaluru", "Hyderabad"], key="scrape_locations")
+        locations = st.multiselect("Locations", LOCATION_OPTIONS, default=[], key="scrape_locations")
         platform_columns = st.columns(4)
         platforms: list[str] = []
         for column, label in zip(platform_columns, PLATFORM_LABELS, strict=True):
-            if column.checkbox(label, value=True, key=f"scrape_{PLATFORM_LABELS[label]}"):
+            if column.checkbox(label, value=False, key=f"scrape_{PLATFORM_LABELS[label]}"):
                 platforms.append(PLATFORM_LABELS[label])
-        max_results = st.slider("Max results per search", 10, 200, 50, step=10, key="scrape_max_results")
+        result_options: list[int | str] = ["All available"] + list(range(10, 201, 10))
+        result_choice = st.selectbox("Max results per search", result_options, index=0, key="scrape_max_results")
+        max_results = None if result_choice == "All available" else int(result_choice)
         experience_columns = st.columns(2)
         min_exp = experience_columns[0].number_input("Min experience (years)", 0.0, 40.0, 0.0, 0.5, key="scrape_min_exp")
         max_exp = experience_columns[1].number_input("Max experience (years)", 0.0, 40.0, 40.0, 0.5, key="scrape_max_exp")
