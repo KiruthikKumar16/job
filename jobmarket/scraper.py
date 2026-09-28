@@ -105,6 +105,19 @@ class PlatformBlockedError(RuntimeError):
     """Raised when a platform returns an explicit block or CAPTCHA page."""
 
 
+class _ThreadLogCapture(logging.Handler):
+    """Capture one JobSpy worker's errors without mixing concurrent query logs."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.thread_id = threading.get_ident()
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.thread == self.thread_id:
+            self.messages.append(record.getMessage()[:300])
+
+
 def _retryable_error(error: Exception) -> bool:
     response = getattr(error, "response", None)
     status = getattr(response, "status_code", None)
@@ -193,13 +206,14 @@ def _normalise_user_proxies(proxies: list[str] | None) -> list[str] | None:
 
 
 def _normalise_glassdoor_location(location: str, country: str) -> str:
-    """Give Glassdoor the city-country form expected by its search endpoint."""
+    """Pass a city or region to Glassdoor without a redundant country suffix."""
     value = _text(location)
     if not value:
         return value
-    if "," in value or value.casefold().endswith(country.casefold()):
-        return value
-    return f"{value}, {country}"
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) > 1 and parts[-1].casefold() == country.casefold():
+        parts.pop()
+    return ", ".join(parts)
 
 
 def _text(value: Any) -> str:
@@ -371,7 +385,7 @@ def _annotate_jobs(frame: pd.DataFrame, term: str, location: str) -> pd.DataFram
 
 def _is_block_error(error: Exception) -> bool:
     message = str(error).lower()
-    markers = ("403", "429", "rate limit", "captcha", "access denied", "anti-bot", "blocked")
+    markers = ("403", "406", "429", "rate limit", "captcha", "access denied", "anti-bot", "blocked")
     return any(marker in message for marker in markers)
 
 
@@ -406,13 +420,22 @@ def _jobspy_fetch(
         # JobSpy round-robins this list. Its accepted format is host:port or
         # user:password@host:port; use the same address format in --proxies.
         options["proxies"] = proxies
-    result = _retry_call(
-        lambda: scrape_jobs(**options),
-        platform=site,
-        term=term,
-        location=location,
-    )
+    jobspy_logger = logging.getLogger(f"JobSpy:{site.title()}")
+    log_capture = _ThreadLogCapture()
+    jobspy_logger.addHandler(log_capture)
+    try:
+        result = _retry_call(
+            lambda: scrape_jobs(**options),
+            platform=site,
+            term=term,
+            location=location,
+        )
+    finally:
+        jobspy_logger.removeHandler(log_capture)
     jobs = _normalise_jobspy(result if result is not None else pd.DataFrame(), site)
+    if jobs.empty and log_capture.messages:
+        error_message = "; ".join(log_capture.messages[-2:])
+        raise RuntimeError(f"JobSpy reported an error for {site}: {error_message}")
     if not jobs.empty:
         jobs["location"] = jobs["location"].replace("", request_location)
     return jobs
@@ -442,12 +465,10 @@ def _naukri_fetch(term: str, location: str, max_results: int | None) -> pd.DataF
         response = _retry_call(request, platform="naukri", term=term, location=location)
         try:
             if response.status_code == 406:
-                LOGGER.warning(
-                    "Naukri rejected the request for term=%r location=%r with HTTP 406",
-                    term,
-                    location,
+                raise PlatformBlockedError(
+                    f"Naukri rejected the request with HTTP 406 for term={term!r} "
+                    f"location={location!r}"
                 )
-                return _empty_frame()
             if _is_challenge_page(response.text):
                 raise PlatformBlockedError("Naukri returned a CAPTCHA or access challenge page")
             return _annotate_jobs(
@@ -459,8 +480,9 @@ def _naukri_fetch(term: str, location: str, max_results: int | None) -> pd.DataF
             response.close()
     except requests.RequestException as error:
         if "406" in str(error):
-            LOGGER.warning("Naukri returned HTTP 406; skipping this query")
-            return _empty_frame()
+            raise PlatformBlockedError(
+                f"Naukri returned HTTP 406 for term={term!r} location={location!r}"
+            ) from error
         raise
 
 

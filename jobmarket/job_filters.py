@@ -15,13 +15,14 @@ def filter_jobs(
     required_skills: list[str] | None = None,
     degree: str | list[str] | None = None,
 ) -> pd.DataFrame:
-    """Filter records without rejecting LinkedIn title-only job cards by default."""
-    result = df.copy()
-    descriptions = (
-        result.get("description", pd.Series("", index=result.index)).fillna("").astype(str)
-    )
+    """Filter records using one aligned mask, retaining truly unclassified listings."""
+    result = df.copy().reset_index(drop=True)
+    mask = pd.Series(True, index=result.index, dtype=bool)
+    descriptions = result.get("description", pd.Series("", index=result.index))
+    descriptions = descriptions.fillna("").astype(str)
+
     if required_skills:
-        wanted = {skill.casefold() for skill in required_skills if skill.strip()}
+        wanted = [skill.casefold() for skill in required_skills if skill.strip()]
 
         def skills_match(row: pd.Series) -> bool:
             content = f"{row.get('title', '')} {row.get('description', '')}"
@@ -29,34 +30,35 @@ def filter_jobs(
                 re.search(r"\b" + re.escape(skill) + r"\b", content, re.I) for skill in wanted
             )
 
-        result = result[result.apply(skills_match, axis=1)]
-        descriptions = descriptions.loc[result.index]
+        mask &= result.apply(skills_match, axis=1)
+
     if degree:
         wanted_degrees = {
             item.casefold() for item in ([degree] if isinstance(degree, str) else degree)
         }
-        qualifications = result.get("qualification", pd.Series("", index=result.index)).fillna("")
-        normalized_qualifications = qualifications.astype(str).str.casefold()
-        matches_degree = normalized_qualifications.isin(
-            wanted_degrees
-        ) | normalized_qualifications.str.startswith(tuple(f"{item} (" for item in wanted_degrees))
-        result = result[matches_degree | descriptions.str.strip().eq("")]
-    seniorities = result.get("seniority", pd.Series("Not Specified", index=result.index)).fillna(
-        "Not Specified"
-    )
+        qualifications = result.get("qualification", pd.Series("", index=result.index))
+        normalized_qualifications = qualifications.fillna("").astype(str).str.casefold()
+        matches_degree = normalized_qualifications.isin(wanted_degrees) | (
+            normalized_qualifications.str.startswith(tuple(f"{item} (" for item in wanted_degrees))
+        )
+        mask &= matches_degree | descriptions.str.strip().eq("")
+
+    seniorities = result.get("seniority", pd.Series("Not Specified", index=result.index))
+    seniorities = seniorities.fillna("Not Specified")
     min_values = pd.to_numeric(
-        result.get("min_exp", pd.Series(index=result.index)), errors="coerce"
+        result.get("min_exp", pd.Series(index=result.index, dtype=float)), errors="coerce"
     )
     max_values = pd.to_numeric(
-        result.get("max_exp", pd.Series(index=result.index)), errors="coerce"
+        result.get("max_exp", pd.Series(index=result.index, dtype=float)), errors="coerce"
     )
-    # Identify rows with no numeric experience and seniority not specified (truly unclassified)
     unclassified = min_values.isna() & max_values.isna() & seniorities.eq("Not Specified")
+
     if max_exp is not None:
-        result = result[(min_values <= max_exp) | seniorities.eq("Entry-Level") | unclassified]
-    if min_exp is not None:
+        mask &= (min_values <= max_exp) | seniorities.eq("Entry-Level") | unclassified
+    if min_exp is not None and min_exp > 0:
         numeric_upper = max_values.fillna(min_values)
-        result = result[(numeric_upper >= min_exp) | seniorities.eq("Senior/Lead") | unclassified]
+        mask &= (numeric_upper >= min_exp) | seniorities.eq("Senior/Lead") | unclassified
     if seniority:
-        result = result[seniorities.eq(seniority)]
-    return result.reset_index(drop=True)
+        mask &= seniorities.eq(seniority)
+
+    return result.loc[mask].reset_index(drop=True)

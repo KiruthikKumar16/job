@@ -6,8 +6,10 @@ import ast
 import difflib
 import json
 import logging
+import math
 import os
 import sqlite3
+import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing, contextmanager
@@ -75,7 +77,7 @@ DASHBOARD_COLUMNS = {
 }
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_jobs(database_path: str, data_directory: str, cache_version: str = "") -> pd.DataFrame:
     """Load the SQLite dataset, falling back to the newest portable export."""
     database = Path(database_path)
@@ -112,11 +114,12 @@ def load_jobs(database_path: str, data_directory: str, cache_version: str = "") 
 
 
 def _dashboard_cache_version(database_path: str, data_directory: str) -> str:
-    """Build a cache key that changes when SQLite/WAL or portable exports change."""
+    """Build a cache key from the active SQLite file or fallback exports."""
     paths = [Path(database_path), Path(f"{database_path}-wal")]
-    directory = Path(data_directory)
-    paths.extend(directory.glob(f"{EXPORT_BASE_FILENAME}_*.csv"))
-    paths.extend(directory.glob(f"{EXPORT_BASE_FILENAME}_*.json"))
+    if not Path(database_path).exists():
+        directory = Path(data_directory)
+        paths.extend(directory.glob(f"{EXPORT_BASE_FILENAME}_*.csv"))
+        paths.extend(directory.glob(f"{EXPORT_BASE_FILENAME}_*.json"))
     stamps = []
     for path in paths:
         try:
@@ -220,7 +223,7 @@ def normalize_imported_csv(frame: pd.DataFrame, source_name: str = "csv") -> pd.
     return _prepare_frame(enrich_jobs(normalized))
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_csv_file(path: str, cache_version: str = "") -> pd.DataFrame:
     return normalize_imported_csv(read_csv_frame(path), Path(path).stem)
 
@@ -257,15 +260,15 @@ def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
         result["date_posted"], format="mixed", errors="coerce", utc=True
     )
     result["qualification"] = result["qualification"].replace({"": "Degree Required"})
-    fallback_quality = result.apply(_data_quality_score, axis=1)
     if "data_quality_score" not in result.columns:
-        result["data_quality_score"] = fallback_quality
+        result["data_quality_score"] = result.apply(_data_quality_score, axis=1)
     else:
         result["data_quality_score"] = pd.to_numeric(result["data_quality_score"], errors="coerce")
-        result["data_quality_score"] = result["data_quality_score"].where(
-            pd.notna(result["data_quality_score"]),
-            fallback_quality,
-        )
+        missing_quality = result["data_quality_score"].isna()
+        if missing_quality.any():
+            result.loc[missing_quality, "data_quality_score"] = result.loc[missing_quality].apply(
+                _data_quality_score, axis=1
+            )
     if "sources" not in result.columns:
         result["sources"] = [[] for _ in range(len(result))]
     else:
@@ -356,6 +359,37 @@ def _reset_state(keys: list[str]) -> None:
     st.rerun()
 
 
+def _search_worker_count(search_count: int) -> int:
+    """Return the same worker count used by extraction for ETA calculations."""
+    configured_workers = os.environ.get("JOB_MAX_WORKERS")
+    try:
+        worker_limit = max(1, int(configured_workers)) if configured_workers else 6
+    except ValueError:
+        worker_limit = 6
+    return min(worker_limit, search_count) if search_count else 1
+
+
+def _estimate_extraction_seconds(search_count: int, max_results: int | None) -> int:
+    """Estimate wall time using a conservative per-query budget and actual concurrency."""
+    if search_count <= 0:
+        return 0
+    workers = _search_worker_count(search_count)
+    seconds_per_search = 120 if max_results is None else 20 + min(max_results, 200) * 0.6
+    return math.ceil(math.ceil(search_count / workers) * seconds_per_search + 30)
+
+
+def _format_duration(seconds: float) -> str:
+    """Format an ETA in short, human-readable units."""
+    rounded_seconds = max(0, math.ceil(seconds))
+    if rounded_seconds < 60:
+        return f"{rounded_seconds} sec"
+    minutes, remaining_seconds = divmod(rounded_seconds, 60)
+    if minutes < 60:
+        return f"{minutes} min {remaining_seconds} sec" if remaining_seconds else f"{minutes} min"
+    hours, remaining_minutes = divmod(minutes, 60)
+    return f"{hours} hr {remaining_minutes} min" if remaining_minutes else f"{hours} hr"
+
+
 def run_extraction(
     terms: list[str],
     locations: list[str],
@@ -367,6 +401,7 @@ def run_extraction(
     hours_old: int | None = None,
     progress_callback: Callable[[int, int, str], Any] | None = None,
     use_public_proxies: bool = False,
+    status_callback: Callable[[str], Any] | None = None,
 ) -> tuple[pd.DataFrame, int, int, int, list[str]]:
     """Fetch each query independently so blocked sources cannot stall the UI."""
     combinations = [
@@ -387,6 +422,10 @@ def run_extraction(
         normalized_proxies = _normalise_user_proxies(proxies) or []
 
     with capture_pipeline_logs() as logs:
+        if status_callback:
+            status_callback(
+                f"Starting {len(combinations)} searches across {len(platforms)} sources."
+            )
 
         def collect_one(
             combination: tuple[str, str, str], task_index: int
@@ -422,19 +461,7 @@ def run_extraction(
                 )
                 return combination, None, f"failed: {error}"
 
-        # Use environment variable for max workers, with fallback to default logic
-        max_workers_env = os.environ.get("JOB_MAX_WORKERS")
-        if max_workers_env:
-            try:
-                max_workers = int(max_workers_env)
-                # Ensure it's at least 1
-                max_workers = max(1, max_workers)
-            except ValueError:
-                # If invalid, fall back to default logic
-                max_workers = min(6, max(1, len(combinations)))
-        else:
-            max_workers = min(6, max(1, len(combinations)))
-        worker_count = min(max_workers, len(combinations)) if len(combinations) > 0 else 1
+        worker_count = _search_worker_count(len(combinations))
         # Search workers only return frames. SQLite persistence happens once,
         # after all futures finish, through storage's per-database writer lock.
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -448,16 +475,22 @@ def run_extraction(
                 platform_status[f"{platform}:{location}:{term}"] = status
                 if frame is not None and not frame.empty:
                     raw_frames.append(frame)
+                result_count = len(frame) if frame is not None else 0
+                work_label = (
+                    f"{platform.title()} | {term} | {location}: {status} ({result_count} listings)"
+                )
                 if progress_callback:
-                    progress_callback(
-                        index, len(combinations), f"Finished {platform.title()} for {location}"
-                    )
+                    progress_callback(index, len(combinations), work_label)
+        if status_callback:
+            status_callback("All searches finished. Enriching and deduplicating listings.")
         raw = (
             pd.concat(raw_frames, ignore_index=True)
             if raw_frames
             else pd.DataFrame(columns=NORMALIZED_COLUMNS)
         )
         enriched = deduplicate_jobs(enrich_jobs(raw))
+        if status_callback:
+            status_callback("Saving the database, export files, and extraction summary.")
         dropped_count = save_to_sqlite(enriched, str(DATABASE_PATH), "jobs")
         save_to_files(enriched, str(BASE_DIR / EXPORT_BASE_FILENAME))
         valid_count = int(
@@ -478,7 +511,13 @@ def run_extraction(
             },
         )
         invalidate_dashboard_cache()
-    selected = filter_jobs(enriched, min_exp=min_exp, max_exp=max_exp)
+        if status_callback:
+            status_callback("Saved results and refreshed the dashboard data.")
+    selected = filter_jobs(
+        enriched,
+        min_exp=min_exp if min_exp > 0 else None,
+        max_exp=max_exp if max_exp < 40 else None,
+    )
     return selected, len(raw), valid_count, dropped_count, logs.messages
 
 
@@ -565,11 +604,9 @@ def show_scrape_section() -> None:
                 help="Public proxies are disabled by default and are never combined with configured proxy credentials.",
             )
         action_columns = st.columns(2)
-        reset_submitted = action_columns[0].form_submit_button(
-            "Reset selections", use_container_width=True
-        )
+        reset_submitted = action_columns[0].form_submit_button("Reset selections", width="stretch")
         submitted = action_columns[1].form_submit_button(
-            "Start Extraction Pipeline", type="primary", use_container_width=True
+            "Start Extraction Pipeline", type="primary", width="stretch"
         )
 
     if reset_submitted:
@@ -606,30 +643,20 @@ def show_scrape_section() -> None:
         st.error("Minimum experience cannot exceed maximum experience.")
         return
 
-    # Calculate search combinations and warn about unbounded searches
+    # Estimate the run before starting so large or uncapped searches show useful timing.
     combination_count = len(terms) * len(locations) * len(platforms)
+    estimated_seconds = _estimate_extraction_seconds(combination_count, max_results)
+    worker_count = _search_worker_count(combination_count)
+    limit_description = (
+        "no result cap" if max_results is None else f"up to {max_results} results per search"
+    )
+    st.info(
+        f"Estimated time: about {_format_duration(estimated_seconds)} for "
+        f"{combination_count} searches ({limit_description}) using up to {worker_count} workers. "
+        "Actual time varies with source response times, retries, and listing volume."
+    )
 
-    # Check if we need to show a warning about unbounded searches
-    show_warning = False
-    warning_message = ""
-
-    if result_choice == "No limit":
-        show_warning = True
-        warning_message = f"This will run {combination_count} searches with no result cap — this may take a long time and risks getting blocked"
-    elif combination_count > 20:  # Warn for large combination counts
-        show_warning = True
-        warning_message = f"This will run {combination_count} searches with {result_choice} results each — this may take a long time"
-
-    # Show warning and require confirmation if needed
-    if show_warning:
-        st.warning(warning_message)
-        confirm = st.checkbox(
-            "I understand the risks and want to proceed", key="confirm_unbounded_search"
-        )
-        if not confirm:
-            st.stop()  # Stop execution if user doesn't confirm
-
-    progress = st.progress(0, text="Starting extraction pipeline")
+    progress = st.progress(0, text="Preparing extraction")
     freshness_hours = {
         "Any time": None,
         "Past 12 hours": 12,
@@ -638,9 +665,49 @@ def show_scrape_section() -> None:
     }.get(freshness)
     if freshness == "Custom":
         freshness_hours = _window_hours(custom_amount, custom_unit)
+    started_monotonic = time.monotonic()
+    work_log: list[str] = []
     with st.status("Running extraction pipeline", expanded=True) as status:
+        st.markdown("**Work log**")
+        work_log_view = st.empty()
+
+        def add_work_log(message: str) -> None:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            work_log.append(f"[{timestamp}] {message}")
+            work_log_view.code("\n".join(work_log[-80:]))
+
+        add_work_log(
+            f"Started {combination_count} searches; estimated duration "
+            f"about {_format_duration(estimated_seconds)}."
+        )
+
+        def update_progress(completed: int, total: int, label: str) -> None:
+            elapsed = time.monotonic() - started_monotonic
+            if completed:
+                total_estimate = elapsed * total / completed + 30
+                remaining = max(0, total_estimate - elapsed)
+            else:
+                remaining = estimated_seconds
+            percent = int((completed / total) * 85) if total else 85
+            progress.progress(
+                percent,
+                text=(
+                    f"Searches {completed}/{total} · elapsed {_format_duration(elapsed)} "
+                    f"· ETA {_format_duration(remaining)}"
+                ),
+            )
+            add_work_log(f"{completed}/{total} — {label}")
+
+        def update_stage(message: str) -> None:
+            add_work_log(message)
+            if message.startswith("All searches finished"):
+                progress.progress(90, text="Searches finished; enriching and deduplicating")
+            elif message.startswith("Saving"):
+                progress.progress(95, text="Saving database and export files")
+            elif message.startswith("Saved"):
+                progress.progress(99, text="Saved; refreshing results")
+
         try:
-            progress.progress(20, text="Collecting public listings")
             records, raw_count, valid_count, dropped_count, logs = run_extraction(
                 terms,
                 locations,
@@ -650,24 +717,35 @@ def show_scrape_section() -> None:
                 max_exp,
                 _parse_proxies(proxy_text),
                 hours_old=freshness_hours,
-                progress_callback=lambda completed, total, label: progress.progress(
-                    int((completed / total) * 90) if total else 90,
-                    text=label,
-                ),
+                progress_callback=update_progress,
                 use_public_proxies=use_public_proxies,
+                status_callback=update_stage,
             )
             progress.progress(100, text="Extraction complete")
             for message in logs:
-                st.write(message)
+                add_work_log(message)
             status.update(label="Extraction complete", state="complete")
             st.success(
-                f"Scraped {raw_count:,} raw records and saved {valid_count:,} valid extracted records. Dropped {dropped_count:,} rows with missing job_url."
+                f"Collected {raw_count:,} raw records and saved {valid_count:,} valid listings. "
+                f"{len(records):,} match the selected experience range; "
+                f"dropped {dropped_count:,} rows with missing job_url."
             )
-            st.info("The SQLite database and timestamped jobs CSV/JSON exports have been updated.")
+            st.info(
+                "The result table is narrowed by the selected experience range. The database and "
+                "exports keep all collected listings; use the Analytics Dashboard experience "
+                "filters to narrow the saved dataset."
+            )
             invalidate_dashboard_cache()
-            st.dataframe(_display_frame(records), hide_index=True, use_container_width=True)
+            visible_records = _display_frame(records)
+            if len(visible_records) > 500:
+                st.caption(
+                    f"Showing the first 500 of {len(visible_records):,} matching rows. "
+                    "All collected records are saved to the database and exports."
+                )
+            st.dataframe(visible_records.head(500), hide_index=True, width="stretch")
         except Exception as error:
             progress.empty()
+            add_work_log(f"Extraction stopped with an error: {error}")
             status.update(label="Extraction completed with an error", state="error")
             st.warning(f"The pipeline could not complete: {error}")
 
@@ -903,11 +981,6 @@ def show_dashboard() -> None:
     if st.sidebar.button("Refresh data", key="refresh_dashboard_data"):
         invalidate_dashboard_cache()
         st.rerun()
-    data = load_jobs(
-        str(DATABASE_PATH),
-        str(BASE_DIR),
-        _dashboard_cache_version(str(DATABASE_PATH), str(BASE_DIR)),
-    )
     if selected_source.startswith("CSV: "):
         selected_path = BASE_DIR / selected_source.removeprefix("CSV: ")
         try:
@@ -924,6 +997,12 @@ def show_dashboard() -> None:
                 f"Could not process {selected_path.name}. Check that it contains readable job data, then try again."
             )
             st.stop()
+    else:
+        data = load_jobs(
+            str(DATABASE_PATH),
+            str(BASE_DIR),
+            _dashboard_cache_version(str(DATABASE_PATH), str(BASE_DIR)),
+        )
     if data.empty:
         st.info("No extracted jobs found. Run the extraction pipeline first.")
         return
@@ -950,6 +1029,13 @@ def show_dashboard() -> None:
         ["Entry-Level", "Mid-Level", "Senior/Lead"],
         default=[],
         key="dashboard_seniority",
+    )
+    experience_columns = st.sidebar.columns(2)
+    dashboard_min_exp = experience_columns[0].number_input(
+        "Min experience (years)", 0.0, 40.0, 0.0, 0.5, key="dashboard_min_exp"
+    )
+    dashboard_max_exp = experience_columns[1].number_input(
+        "Max experience (years)", 0.0, 40.0, 40.0, 0.5, key="dashboard_max_exp"
     )
     locations = st.sidebar.multiselect(
         "Location",
@@ -1006,7 +1092,7 @@ def show_dashboard() -> None:
         "Reset dashboard selections",
         key="reset_dashboard",
         type="secondary",
-        use_container_width=True,
+        width="stretch",
     ):
         _reset_state(
             [
@@ -1016,6 +1102,8 @@ def show_dashboard() -> None:
                 "dashboard_qualification",
                 "dashboard_skills",
                 "dashboard_seniority",
+                "dashboard_min_exp",
+                "dashboard_max_exp",
                 "dashboard_location",
                 "dashboard_work_mode",
                 "dashboard_quality",
@@ -1047,6 +1135,15 @@ def show_dashboard() -> None:
         filtered = filtered[filtered["location"].isin(locations)]
     if work_modes:
         filtered = filtered[filtered["work_mode"].isin(work_modes)]
+    if dashboard_min_exp > dashboard_max_exp:
+        st.error("Minimum experience cannot exceed maximum experience.")
+        return
+    if dashboard_min_exp > 0 or dashboard_max_exp < 40:
+        filtered = filter_jobs(
+            filtered,
+            min_exp=dashboard_min_exp if dashboard_min_exp > 0 else None,
+            max_exp=dashboard_max_exp if dashboard_max_exp < 40 else None,
+        )
     filtered = filtered[filtered["data_quality_score"] >= minimum_quality]
     if dashboard_hours is not None:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=dashboard_hours)
@@ -1087,7 +1184,7 @@ def show_dashboard() -> None:
                 y="Jobs",
                 title="Exact qualification breakdown",
             ),
-            use_container_width=True,
+            width="stretch",
         )
     with chart_columns[1]:
         skill_chart = (
@@ -1095,7 +1192,7 @@ def show_dashboard() -> None:
         )
         st.plotly_chart(
             px.bar(skill_chart, x="Jobs", y="Skill", orientation="h", title="Top skills demand"),
-            use_container_width=True,
+            width="stretch",
         )
 
     matrix = filtered.dropna(subset=["min_exp"]).copy()
@@ -1128,24 +1225,29 @@ def show_dashboard() -> None:
             showlegend=False,
             boxmode="group",
         )
-        st.plotly_chart(figure, use_container_width=True)
+        st.plotly_chart(figure, width="stretch")
     else:
         st.info("No numeric experience values are available for the current selection.")
 
     st.subheader("Filtered job records")
     display = _display_frame(filtered)
+    if len(display) > 500:
+        st.caption(
+            f"Showing the first 500 of {len(display):,} matching rows. "
+            "The download contains all matching rows."
+        )
     if "Apply URL" in display.columns:
         st.dataframe(
-            display,
+            display.head(500),
             column_config={"Apply URL": st.column_config.LinkColumn("Apply URL")},
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
     else:
-        st.dataframe(display, hide_index=True, use_container_width=True)
+        st.dataframe(display.head(500), hide_index=True, width="stretch")
     csv_data = display.to_csv(index=False).encode("utf-8")
     st.download_button(
-        "Download filtered CSV", csv_data, "filtered_jobs.csv", "text/csv", use_container_width=True
+        "Download filtered CSV", csv_data, "filtered_jobs.csv", "text/csv", width="stretch"
     )
 
     runs = load_extraction_runs(str(DATABASE_PATH))
@@ -1153,7 +1255,7 @@ def show_dashboard() -> None:
         with st.expander("Recent extraction health"):
             health = runs[["started_at", "raw_count", "valid_count", "status"]].copy()
             health.columns = ["Started", "Raw Records", "Valid Records", "Status"]
-            st.dataframe(health, hide_index=True, use_container_width=True)
+            st.dataframe(health, hide_index=True, width="stretch")
 
 
 def _skill_counts(frame: pd.DataFrame) -> pd.Series:

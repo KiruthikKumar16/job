@@ -47,6 +47,17 @@ docker run --rm -p 8501:8501 jobmarket
 
 The tailoring prompt excludes phone, email, and address. The output validator checks generated claims against the master resume and reports unmet required skills as gaps. Generated documents are saved under `outputs/` with the job id and timestamp; this directory is Git-ignored.
 
+**Privacy:** tailoring sends the job description and relevant resume content (including work history, employers, dates, skills, and bullets) to the configured LLM provider. Contact fields are redacted before the request, but resume facts are still shared with that provider. Review its data handling terms and use a provider you trust; local matching works without an API key.
+
+## Search and dashboard behavior
+
+- Searches run concurrently, with a default limit of six workers. Set `JOB_MAX_WORKERS` to change it. The scrape page shows an approximate run duration, per-search progress, and a work log; source response times and retries can change the estimate.
+- The scrape page's experience range narrows the on-screen results. All collected, enriched listings are saved to SQLite and timestamped CSV/JSON exports. The Analytics Dashboard applies its own filters to the saved dataset and caps the visible table at 500 rows; **Download filtered CSV** includes every matching row.
+- Listings with unknown experience remain visible when experience filters are applied. Degree filters also retain rows whose descriptions are unavailable, because those listings cannot be classified reliably.
+- Dashboard data is cached for up to five minutes and refreshed after an extraction or with **Refresh data**. CSV imports are read from the selected file when that source is active.
+
+The CLI applies filters before writing its SQLite and export outputs. Its main options are `--terms`, `--locations`, `--platforms`, `--max-results`, `--hours-old`, `--min-exp`, `--max-exp`, `--seniority`, `--skills`, and `--degree`; run `python main.py --help` for details. The Streamlit scrape workflow saves all collected rows regardless of its on-screen experience selection.
+
 ## Configuration
 
 Put local settings in `.env` (copy `.env.example`) or set them in the process environment. Do not commit API keys or personal resume data.
@@ -65,6 +76,10 @@ Put local settings in `.env` (copy `.env.example`) or set them in the process en
 | `JOBMARKET_LLM_TIMEOUT` | `60` seconds | Timeout for a tailoring API request. |
 
 Public proxy use is opt-in in the application and public proxies are never used with credentials. Treat public proxies as untrusted and avoid sending them sensitive traffic.
+
+## Development checks
+
+Install development dependencies with `python -m pip install -e ".[dev]"`. The repository's CI runs Ruff lint and formatting checks, mypy, pytest with a 50% coverage threshold, and Python compilation on Python 3.10, 3.11, and 3.12. See [Contributing](CONTRIBUTING.md) for the local commands.
 
 ## Project layout
 

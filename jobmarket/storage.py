@@ -501,12 +501,12 @@ def save_extraction_run(db_path: str, run: dict[str, object]) -> None:
 def load_jobs_for_dashboard(
     connection: sqlite3.Connection, table_name: str = "jobs"
 ) -> pd.DataFrame:
-    """Read job-list fields while leaving potentially large descriptions in SQLite."""
+    """Read dashboard fields without loading full descriptions into memory."""
     table = _valid_identifier(table_name)
     columns = [
         row[1]
         for row in connection.execute(f'PRAGMA table_info("{table}")')
-        if row[1] != "description_raw"
+        if row[1] not in {"description", "description_raw"}
     ]
     if not columns:
         return pd.DataFrame()
