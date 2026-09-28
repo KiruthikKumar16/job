@@ -43,14 +43,29 @@ class CompletionClient(Protocol):
 
 
 SYSTEM_PROMPT = """You rewrite resume bullets for a specific job using only the supplied master-resume facts.
-Never add or imply skills, tools, employers, responsibilities, outcomes, or metrics that are not present
-in the master resume. You may reorder or rephrase existing facts to mirror the job description's language.
-Do not fill skill gaps by claiming the candidate has those skills. Return unmet required skills exactly
-in the gaps field. Do not include contact details. Return one strict JSON object, with no markdown or
-surrounding prose, using exactly this shape:
+Never add or imply skills, tools, employers, responsibilities, outcomes, or metrics that are not present in the master resume.
+You may reorder or rephrase existing facts to mirror the job description's language.
+Do not fill skill gaps by claiming the candidate has those skills.
+Return unmet required skills exactly in the gaps field.
+Do not include contact details.
+Return one strict JSON object, with no markdown or surrounding prose, using exactly this shape:
 {"selected_bullets":[{"source_id":"existing source id","text":"rewritten bullet"}],"gaps":["unmet required skill"]}
-Rewrite every supplied selected bullet exactly once and keep its source_id unchanged. Do not return any
-other fields."""
+Rewrite every supplied selected bullet exactly once and keep its source_id unchanged.
+Do not return any other fields.
+
+EXAMPLES OF WHAT NOT TO DO:
+- Do not claim "5 years of experience with X" if the master resume only shows "3 years of experience with X"
+- Do not claim expertise in "AWS Kubernetes" if the master resume only shows "basic Kubernetes usage"
+- Do not claim to have led a team of 10 people if the master resume only shows individual contributor work
+- Do not imply you worked at Google if the master resume shows work at a different company
+- Do not claim to have improved performance by 50% if the master resume doesn't contain that metric
+
+EXAMPLES OF WHAT TO DO:
+- Rephrase "Developed Python applications for data processing" to "Built data processing pipelines using Python" if the job description mentions "data pipelines"
+- Reorder bullet points to put most relevant experience first
+- Use synonyms that match the job description (e.g., "frontend development" vs "UI development")
+- Keep all facts accurate while optimizing for relevance to the target job description
+"""
 
 _PROVIDER_ENDPOINTS = {
     "openai": "https://api.openai.com/v1/chat/completions",
@@ -78,43 +93,43 @@ _ORG_PREPOSITION_RE = re.compile(
 _ORG_TRAILING_WORDS = {"and", "or", "the", "a", "an", "to", "during", "while"}
 _NUMBER_RE = re.compile(r"(?<![\w])\d+(?:,\d{3})*(?:\.\d+)?\s*(?:%|x|k|m|b)?(?![\w])", re.I)
 _NUMBER_WORDS = {
-    "zero",
-    "one",
-    "two",
-    "three",
-    "four",
-    "five",
-    "six",
-    "seven",
-    "eight",
-    "nine",
-    "ten",
-    "eleven",
-    "twelve",
-    "thirteen",
-    "fourteen",
-    "fifteen",
-    "sixteen",
-    "seventeen",
-    "eighteen",
-    "nineteen",
-    "twenty",
-    "thirty",
-    "forty",
-    "fifty",
-    "sixty",
-    "seventy",
-    "eighty",
-    "ninety",
-    "hundred",
-    "thousand",
-    "million",
-    "billion",
-    "first",
-    "second",
-    "third",
-    "fourth",
-    "fifth",
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+    "hundred": 100,
+    "thousand": 1000,
+    "million": 1000000,
+    "billion": 1000000000,
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
 }
 
 
