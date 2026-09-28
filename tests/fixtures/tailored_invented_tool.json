@@ -1,0 +1,9 @@
+{
+  "selected_bullets": [
+    {
+      "source_id": "exp-a",
+      "text": "Built Python and SQL pipelines with Postman on AWS, reducing latency by 35%."
+    }
+  ],
+  "gaps": ["Kubernetes"]
+}

@@ -1,104 +1,109 @@
 # Job Market Explorer
 
-V2 is a Python job scraping, qualification extraction, filtering, persistence, and Streamlit analytics application for public job listings. V1 remains the baseline commit in Git history.
+Job Market Explorer is a Python and Streamlit app for collecting, deduplicating, and analyzing job listings. It also includes deterministic resume matching and optional, fact-constrained resume tailoring.
 
-## Features
+## Screenshots
 
-- Collect listings from LinkedIn, Indeed, Glassdoor, and Naukri through the scraper pipeline.
-- Normalize job records and retain listings even when descriptions are missing.
-- Extract technical degrees with exact regex matching and generic degree fallbacks.
-- Detect skills independently with word-boundary matching.
-- Classify experience, seniority, and work mode.
-- Persist enriched data to SQLite and timestamped CSV/JSON exports.
-- Explore qualifications, skills, locations, seniority, and experience in the Streamlit dashboard.
-- Run independent platform/location searches concurrently with per-query progress and graceful partial failures.
-- Track source metadata, data-quality scores, missing descriptions, and extraction-run history.
-- Filter the dashboard by source, work mode, posted date, and minimum data quality.
-- Select multiple default job roles such as Data Analyst, Data Engineer, and Full Stack Developer in both app sections.
-- Use preset or custom hours/days posting windows during extraction and in Analytics, including custom calendar ranges.
-- Set a numeric maximum result count with a slider or drag the right endpoint to `No limit`.
-- Export files use the readable `job_market_export_<timestamp>` name.
-- Choose any local CSV from the Analytics data-source selector; flexible headers are mapped and re-enriched automatically.
-- LinkedIn description retrieval is enabled for new runs; older exports must be scraped again to populate fields that were previously unavailable.
-- Run regression tests in CI and package the app with Docker.
+<!-- Add screenshots at these paths when available. -->
 
-## Requirements
+**Dashboard** — screenshot placeholder (`docs/images/dashboard.png`)
 
-Use CPython 3.10, 3.11, or 3.12. The pinned JobSpy dependency uses NumPy 1.26.3, which may not have a wheel for newer Python versions on Windows.
+**Resume tailoring** — screenshot placeholder (`docs/images/resume-tailor.png`)
 
-## Windows setup
+## Quickstart
+
+Requires Python 3.10, 3.11, or 3.12.
 
 ```powershell
-py -3.12 -m venv .venv312
-.venv312\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
 python -m playwright install chromium
+streamlit run app.py
 ```
 
-## Run the web application
+Open the local URL printed by Streamlit, usually <http://localhost:8501>. Choose **Scrape & Extract Data** to search, or **Analytics Dashboard** to browse stored jobs and import a CSV.
+
+For the command-line interface:
 
 ```powershell
-.venv312\Scripts\python.exe -m streamlit run app.py
+python main.py --terms "Data Engineer" --locations "Bengaluru, India" `
+  --platforms linkedin,indeed,glassdoor,naukri --max-results 50
 ```
 
-Open the local URL shown by Streamlit, normally `http://localhost:8501`.
+Run `python main.py --help` to see all search and filtering options. A Docker image can be built and started with:
 
-Use **Scrape & Extract Data** to configure a search and save results. Use **Analytics Dashboard** to filter and visualize the latest SQLite dataset.
-
-## Run from the command line
-
-```powershell
-.venv312\Scripts\python.exe main.py `
-  --terms "Data Engineer" `
-  --locations "Bengaluru, India" "Hyderabad, India" `
-  --platforms linkedin,indeed,glassdoor,naukri `
-  --skills Python SQL `
-  --degree B.Tech B.E. M.Tech BS MS `
-  --min-exp 0 `
-  --max-exp 2 `
-  --max-results 50
+```sh
+docker build -t jobmarket .
+docker run --rm -p 8501:8501 jobmarket
 ```
 
-The CLI also accepts comma-separated values for options that support lists.
+## Resume workflow
 
-## Output
+1. Copy `resume/master_resume.example.json` to `resume/master_resume.json` and replace its sample content with your own. The personal file is Git-ignored.
+2. Configure an LLM provider and API key as described in [Configuration](#configuration). Tailoring is optional; local matching and ranking are deterministic and do not call an LLM.
+3. Open **Tailor Resume**, choose a saved job, and review the match score and matched or missing skills. The page warns when the job description is unavailable or blocked.
+4. Generate tailored bullets, review them alongside the originals, edit the text, and download the ATS-friendly DOCX.
 
-The application writes the following local files:
+The tailoring prompt excludes phone, email, and address. The output validator checks generated claims against the master resume and reports unmet required skills as gaps. Generated documents are saved under `outputs/` with the job id and timestamp; this directory is Git-ignored.
 
-- `jobs.db`: SQLite database used by the dashboard.
-- `jobs_<timestamp>.csv`: portable tabular export.
-- `jobs_<timestamp>.json`: portable JSON export.
+## Configuration
 
-These generated files are intentionally excluded from Git. Run a new extraction to regenerate them.
+Put local settings in `.env` (copy `.env.example`) or set them in the process environment. Do not commit API keys or personal resume data.
 
-## V2 development checks
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `JOB_DATABASE_PATH` | `jobs.db` | SQLite database path. Relative paths are resolved from the project directory. |
+| `JOB_MAX_WORKERS` | Automatic | Maximum concurrent search workers. |
+| `JOB_SCRAPER_MIN_REQUEST_INTERVAL` | `1.0` seconds | Minimum delay between scraper requests. |
+| `PROXY_LIST` | Empty | Optional comma-separated proxy URLs for searches. Keep this empty unless you have a permitted, trusted proxy. |
+| `PROXY_POOL_TTL` | `300.0` seconds | Cache lifetime for the optional public-proxy pool. |
+| `JOBMARKET_LLM_PROVIDER` | `openai` | Provider name for resume tailoring. |
+| `JOBMARKET_LLM_MODEL` | Required for tailoring | Model name supported by the provider endpoint. |
+| `JOBMARKET_LLM_API_KEY` | Empty | API key. If empty, the app also checks `<PROVIDER>_API_KEY`, such as `OPENAI_API_KEY`. |
+| `JOBMARKET_LLM_BASE_URL` | Provider default | Optional OpenAI Chat Completions-compatible endpoint URL. |
+| `JOBMARKET_LLM_TIMEOUT` | `60` seconds | Timeout for a tailoring API request. |
 
-```powershell
-.venv312\Scripts\python.exe -m pytest -q
-.venv312\Scripts\python.exe -m py_compile app.py filter.py main.py parser.py scraper.py storage.py
-```
-
-Build and run the container:
-
-```powershell
-docker build -t job-market-explorer .
-docker run --rm -p 8501:8501 job-market-explorer
-```
-
-GitHub Actions runs the test suite and Python compilation checks for pushes and pull requests targeting `main`.
-
-## Data access and scraper notes
-
-Only collect pages and data you are permitted to access. Job-board markup, APIs, rate limits, and access policies change frequently. The scraper handles common blocks and continues where possible, but it cannot guarantee coverage or bypass CAPTCHAs and access challenges. Treat public proxies as untrusted and never use them with credentials or sensitive traffic.
-
-Some fields depend on what each source returns. Descriptions, posting dates, and salary values may be unavailable because a job board hides them, blocks detail requests, or does not expose them in its public result. The app preserves those records, uses title-based fallback extraction where possible, and reports source completeness through `data_quality_score`.
+Public proxy use is opt-in in the application and public proxies are never used with credentials. Treat public proxies as untrusted and avoid sending them sensitive traffic.
 
 ## Project layout
 
-- `app.py`: Streamlit interface and dashboard.
-- `main.py`: command-line orchestration.
-- `scraper.py`: JobSpy and browser collection strategies.
-- `parser.py`: qualification, skill, experience, and work-mode extraction.
-- `filter.py`: qualification, skill, seniority, and experience filtering.
-- `storage.py`: SQLite, CSV, and JSON persistence.
-- `proxy_manager.py`: optional public proxy validation.
+```text
+.
+├── app.py                     # Thin Streamlit entry point
+├── main.py                    # CLI entry point
+├── jobmarket/
+│   ├── app.py                  # Streamlit pages and app logic
+│   ├── cli.py                  # CLI implementation
+│   ├── scraper.py              # Collection and description retrieval
+│   ├── job_parser.py           # Degree, skills, sections, and requirements
+│   ├── job_filters.py          # Listing filters
+│   ├── storage.py              # SQLite, migrations, CSV/JSON exports
+│   ├── dedup.py                # Cross-source deduplication
+│   ├── csv_import.py           # Flexible CSV import
+│   ├── proxy_manager.py        # Optional proxy support
+│   └── resume/                 # Resume models, matching, tailoring, DOCX
+├── resume/
+│   └── master_resume.example.json
+├── tests/                      # Pytest suite and fixtures
+├── .github/workflows/ci.yml    # Python 3.10–3.12 CI
+├── Dockerfile
+└── pyproject.toml
+```
+
+## Troubleshooting
+
+- **Playwright or browser launch errors:** install the browser for the active environment with `python -m playwright install chromium`. The Docker image installs Chromium and its runtime libraries during the build.
+- **Tailoring says configuration is incomplete:** set `JOBMARKET_LLM_MODEL` and the API key variable for your provider. For a compatible custom endpoint, set `JOBMARKET_LLM_BASE_URL`.
+- **A job has no usable description:** boards may omit descriptions or block detail requests. The listing is retained and its description status is shown in the app.
+- **Few or no results / access challenge:** board availability, terms, rate limits, and page markup change. The app can report partial source failures, but does not guarantee results or bypass CAPTCHAs.
+- **CSV import fails:** check that the file is a readable CSV and has recognizable job fields such as title and company. Analytics displays import errors in the page.
+- **Database appears stale:** start a new extraction to refresh saved listings and dashboard data. Keep the database file writable by the account running the app.
+
+## Terms of service and responsible use
+
+Job boards set their own terms, access rules, and rate limits. Scraping or automated collection may violate a site's terms of service, even when pages are publicly viewable. Review and follow the applicable terms and laws before collecting data. Use this tool for personal or research purposes, collect only data you are permitted to access, and respect rate limits and access controls. Do not use it to evade CAPTCHAs or other restrictions. You are responsible for how you use the software and for complying with applicable rules.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).

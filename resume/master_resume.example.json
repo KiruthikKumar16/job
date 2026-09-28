@@ -1,0 +1,63 @@
+{
+  "contact": {
+    "name": "Alex Example",
+    "email": "alex@example.com",
+    "phone": "+1-555-0100",
+    "location": "Example City",
+    "linkedin": "https://www.linkedin.com/in/alex-example",
+    "github": "https://github.com/alex-example",
+    "website": "https://alex.example.com"
+  },
+  "summary": "Software engineer focused on reliable data products and backend services.",
+  "skills": {
+    "Programming": ["Python", "SQL", "TypeScript"],
+    "Data": ["Pandas", "PostgreSQL", "Apache Spark"],
+    "Cloud and tools": ["AWS", "Docker", "Git"]
+  },
+  "experience": [
+    {
+      "role": "Software Engineer",
+      "company": "Example Systems",
+      "dates": {"start": "2022-04", "end": "Present"},
+      "bullets": [
+        {
+          "id": "exp-data-pipeline",
+          "text": "Built an event processing service used by product and analytics teams.",
+          "tags": ["Python", "Data Engineering"],
+          "metrics": {"events_processed_per_day": 1200000, "latency_reduction": "35%"}
+        },
+        "Improved release reliability by adding automated integration checks."
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "name": "Job Market Explorer",
+      "tech": ["Python", "Pandas", "SQLite", "Streamlit"],
+      "bullets": [
+        {
+          "text": "Created a searchable pipeline for collecting and analyzing job listings.",
+          "tags": ["Analytics", "Full Stack"],
+          "metrics": {"sources": 4}
+        }
+      ]
+    }
+  ],
+  "education": [
+    {
+      "institution": "Example University",
+      "degree": "Bachelor of Science",
+      "field": "Computer Science",
+      "dates": {"start": "2017", "end": "2021"},
+      "details": ["Graduated with honors"]
+    }
+  ],
+  "certifications": [
+    {
+      "name": "AWS Certified Cloud Practitioner",
+      "issuer": "Amazon Web Services",
+      "date": "2023-08",
+      "credential_url": "https://example.com/credentials/aws"
+    }
+  ]
+}

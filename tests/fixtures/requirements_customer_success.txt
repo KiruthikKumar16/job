@@ -1,0 +1,13 @@
+Customer Success Engineer
+
+KEY RESPONSIBILITIES
+- Help customers integrate our REST API and diagnose technical issues.
+- Write clear troubleshooting guides and collaborate with engineering.
+
+REQUIREMENTS:
+- 2+ years in a customer-facing technical role.
+- Experience with Linux, SQL, and Postman.
+- Bachelor's degree in Information Technology preferred.
+
+GOOD TO HAVE
+- Familiarity with AWS and Kubernetes.

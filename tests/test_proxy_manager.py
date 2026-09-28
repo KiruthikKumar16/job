@@ -1,15 +1,10 @@
-"""Tests for proxy_manager.py."""
-import sys
-import os
-# Add the current directory to the path so we can import proxy_manager
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/..')
+"""Tests for jobmarket.proxy_manager."""
 
-from unittest.mock import patch, MagicMock
-import pytest
-import requests
 import time
-import proxy_manager
-from proxy_manager import test_proxy, get_proxy_pool, _as_url
+from unittest.mock import patch
+
+from jobmarket import proxy_manager
+from jobmarket.proxy_manager import _as_url
 
 
 def test_as_url():
@@ -25,14 +20,18 @@ def test_as_url():
     assert _as_url("192.168.1.100:3128") == "http://192.168.1.100:3128"
 
     # Test edge cases
-    assert _as_url("  proxy.example.com:8080  ") == "http://proxy.example.com:8080"  # strips whitespace
+    assert (
+        _as_url("  proxy.example.com:8080  ") == "http://proxy.example.com:8080"
+    )  # strips whitespace
     assert _as_url("") == "http://"  # empty string
 
 
-@patch('proxy_manager._fetch_proxyscrape')
-@patch('proxy_manager._fetch_geonode')
-@patch('proxy_manager.test_proxy')
-def test_get_proxy_pool_uses_cache_when_valid(mock_test_proxy, mock_fetch_geonode, mock_fetch_proxyscrape):
+@patch("jobmarket.proxy_manager._fetch_proxyscrape")
+@patch("jobmarket.proxy_manager._fetch_geonode")
+@patch("jobmarket.proxy_manager.test_proxy")
+def test_get_proxy_pool_uses_cache_when_valid(
+    mock_test_proxy, mock_fetch_geonode, mock_fetch_proxyscrape
+):
     """Test that get_proxy_pool returns cached pool when still within TTL."""
     # Save original cache state
     original_cache = proxy_manager._PROXY_POOL_CACHE.copy()
@@ -60,10 +59,12 @@ def test_get_proxy_pool_uses_cache_when_valid(mock_test_proxy, mock_fetch_geonod
         proxy_manager._PROXY_POOL_TTL = original_ttl
 
 
-@patch('proxy_manager._fetch_proxyscrape')
-@patch('proxy_manager._fetch_geonode')
-@patch('proxy_manager.test_proxy')
-def test_get_proxy_pool_fetch_new_when_cache_expired(mock_test_proxy, mock_fetch_geonode, mock_fetch_proxyscrape):
+@patch("jobmarket.proxy_manager._fetch_proxyscrape")
+@patch("jobmarket.proxy_manager._fetch_geonode")
+@patch("jobmarket.proxy_manager.test_proxy")
+def test_get_proxy_pool_fetch_new_when_cache_expired(
+    mock_test_proxy, mock_fetch_geonode, mock_fetch_proxyscrape
+):
     """Test that get_proxy_pool fetches new pool when cache is expired."""
     # Save original cache state
     original_cache = proxy_manager._PROXY_POOL_CACHE.copy()
@@ -104,6 +105,38 @@ def test_get_proxy_pool_fetch_new_when_cache_expired(mock_test_proxy, mock_fetch
             assert proxy in ["http://scrape1:8080", "http://scrape2:8080"]
     finally:
         # Restore original cache state
+        proxy_manager._PROXY_POOL_CACHE = original_cache
+        proxy_manager._PROXY_POOL_TIMESTAMP = original_timestamp
+        proxy_manager._PROXY_POOL_TTL = original_ttl
+
+
+@patch("jobmarket.proxy_manager._fetch_proxyscrape")
+@patch("jobmarket.proxy_manager._fetch_geonode")
+@patch("jobmarket.proxy_manager.test_proxy")
+def test_get_proxy_pool_returns_empty_when_no_proxies_work(
+    mock_test_proxy, mock_fetch_geonode, mock_fetch_proxyscrape
+):
+    """When every candidate proxy fails validation, get_proxy_pool returns []."""
+    original_cache = proxy_manager._PROXY_POOL_CACHE.copy()
+    original_timestamp = proxy_manager._PROXY_POOL_TIMESTAMP
+    original_ttl = proxy_manager._PROXY_POOL_TTL
+
+    try:
+        # Force a fresh fetch by clearing the cache
+        proxy_manager._PROXY_POOL_CACHE = []
+        proxy_manager._PROXY_POOL_TIMESTAMP = 0.0
+
+        mock_fetch_proxyscrape.return_value = ["http://scrape1:8080", "http://scrape2:8080"]
+        mock_fetch_geonode.return_value = ["http://geonode1:8080", "http://geonode2:8080"]
+
+        # All candidates fail
+        mock_test_proxy.return_value = False
+
+        result = proxy_manager.get_proxy_pool(limit=10)
+
+        assert result == [], f"Expected empty list, got {result}"
+        assert mock_test_proxy.call_count >= 2
+    finally:
         proxy_manager._PROXY_POOL_CACHE = original_cache
         proxy_manager._PROXY_POOL_TIMESTAMP = original_timestamp
         proxy_manager._PROXY_POOL_TTL = original_ttl

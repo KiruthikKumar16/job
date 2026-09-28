@@ -1,0 +1,35 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Local databases and SQLite sidecars
+jobs.db
+jobs.db-shm
+jobs.db-wal
+
+# Exported job data
+exports/
+job_export_*.csv
+job_export_*.json
+job_market_export_*.csv
+job_market_export_*.json
+jobs_*.csv
+jobs_*.json
+
+# Personal resume content and generated documents
+resume/master_resume.json
+outputs/
+
+# Repository metadata and local development artifacts
+.git/
+.venv/
+.venv*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+jobmarket.egg-info/

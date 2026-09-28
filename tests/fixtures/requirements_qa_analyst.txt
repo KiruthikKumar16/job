@@ -1,0 +1,13 @@
+QA Analyst
+
+WHAT YOU'LL DO:
+- Create and maintain automated tests for web applications.
+- Partner with developers to investigate defects.
+
+Must have
+- 3-5 years of quality assurance experience.
+- Java, Selenium, and Git experience.
+- Bachelor's degree or equivalent practical experience.
+
+Preferred qualifications:
+- Python and Docker experience.

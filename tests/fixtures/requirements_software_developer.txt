@@ -1,0 +1,14 @@
+Software Developer
+
+Responsibilities:
+- Design and ship reliable backend services using Java and Spring Boot.
+- Review code and maintain automated tests.
+
+What you must have:
+- 5 years of professional software development experience.
+- Java, SQL, Git, and REST API experience.
+- B.Tech or B.E. in Computer Science.
+
+Preferred:
+- Experience with Docker, Kubernetes, and AWS.
+- Exposure to Kafka is a bonus.

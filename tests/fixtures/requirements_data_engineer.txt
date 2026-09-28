@@ -1,0 +1,14 @@
+Data Engineer
+
+Responsibilities
+- Build batch and streaming pipelines for product and analytics data.
+- Work with Python and SQL to validate data quality and improve reliability.
+
+Requirements:
+- 4+ years of data engineering experience.
+- Strong Python and SQL skills, plus experience building data warehouses.
+- Bachelor's degree in Computer Science or a related field.
+
+Nice to have
+- Experience with Snowflake, Spark, and AWS.
+- Familiarity with Airflow is a plus.

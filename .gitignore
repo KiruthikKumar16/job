@@ -6,9 +6,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
 
 # Local application data and generated exports
 jobs.db
+jobs.db-shm
+jobs.db-wal
 job_export_*.csv
 job_export_*.json
 job_market_export_*.csv
@@ -21,11 +24,15 @@ jobs_*.json
 .env.*
 !.env.example
 .streamlit/secrets.toml
+resume/master_resume.json
+outputs/
 
-# IDE and OS files
+# IDE, AI assistants, and OS files
 .vscode/
 .idea/
+.agents/
 .amazonq/
+.claude/
 .DS_Store
 Thumbs.db
 

@@ -1,0 +1,9 @@
+{
+  "selected_bullets": [
+    {
+      "source_id": "exp-a",
+      "text": "Built Python and SQL pipelines on AWS, reducing latency by 50%."
+    }
+  ],
+  "gaps": ["Kubernetes"]
+}
