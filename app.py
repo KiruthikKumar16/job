@@ -6,6 +6,7 @@ import difflib
 import io
 import json
 import logging
+import os
 import sqlite3
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,12 +21,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from filter import filter_jobs
-from parser import enrich_jobs
+from parser import enrich_jobs, _data_quality_score
 from scraper import INDIA_PLATFORMS, NORMALIZED_COLUMNS, fetch_jobs
-from storage import load_extraction_runs, save_extraction_run, save_to_files, save_to_sqlite
+from storage import EXPORT_BASE_FILENAME, load_extraction_runs, save_extraction_run, save_to_files, save_to_sqlite
 
 BASE_DIR = Path(__file__).resolve().parent
-DATABASE_PATH = BASE_DIR / "jobs.db"
+# Use environment variable for database path, fallback to default
+default_db_path = os.environ.get("JOB_DATABASE_PATH", "jobs.db")
+DATABASE_PATH = BASE_DIR / default_db_path
 PLATFORM_LABELS = {
     "LinkedIn": "linkedin",
     "Indeed": "indeed",
@@ -69,10 +72,10 @@ def load_jobs(database_path: str, data_directory: str) -> pd.DataFrame:
             pass
 
     directory = Path(data_directory)
-    exports = sorted(directory.glob("jobs_*.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
+    exports = sorted(directory.glob(f"{EXPORT_BASE_FILENAME}_*.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
     if exports:
         return _prepare_frame(pd.read_csv(exports[0]))
-    json_exports = sorted(directory.glob("jobs_*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    json_exports = sorted(directory.glob(f"{EXPORT_BASE_FILENAME}_*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
     if json_exports:
         return _prepare_frame(pd.read_json(json_exports[0]))
     return pd.DataFrame()
@@ -151,13 +154,13 @@ def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
         if column not in result.columns:
             result[column] = pd.NA
         result[column] = pd.to_numeric(result[column], errors="coerce")
-    fallback_quality = result.apply(_quality_score, axis=1)
+    fallback_quality = result.apply(_data_quality_score, axis=1)
     if "data_quality_score" not in result.columns:
         result["data_quality_score"] = fallback_quality
     else:
         result["data_quality_score"] = pd.to_numeric(result["data_quality_score"], errors="coerce")
         result["data_quality_score"] = result["data_quality_score"].where(
-            result["data_quality_score"].gt(0), fallback_quality,
+            pd.notna(result["data_quality_score"]), fallback_quality,
         )
     if "date_posted" not in result.columns:
         result["date_posted"] = pd.NaT
@@ -166,9 +169,6 @@ def _prepare_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _quality_score(row: pd.Series) -> int:
-    fields = ("title", "company", "location", "job_url", "qualification", "extracted_skills")
-    return round((sum(bool(row.get(field)) for field in fields) / len(fields)) * 100)
 
 
 def _parse_skills(value: object) -> list[str]:
@@ -239,13 +239,24 @@ def run_extraction(terms: list[str], locations: list[str], platforms: list[str],
     started_at = datetime.now(timezone.utc)
     raw_frames: list[pd.DataFrame] = []
     platform_status: dict[str, str] = {}
+
+    # Normalize proxies once for the entire extraction
+    normalized_proxies = []
+    if proxies:
+        from scraper import _normalise_user_proxies
+        normalized_proxies = _normalise_user_proxies(proxies) or []
+
     with capture_pipeline_logs() as logs:
-        def collect_one(combination: tuple[str, str, str]) -> tuple[tuple[str, str, str], pd.DataFrame | None, str]:
+        def collect_one(combination: tuple[str, str, str], task_index: int) -> tuple[tuple[str, str, str], pd.DataFrame | None, str]:
             term, location, platform = combination
+            # Assign proxy based on task index for rotation across all tasks
+            proxy = normalized_proxies[task_index % len(normalized_proxies)] if normalized_proxies else None
             try:
                 frame = fetch_jobs(
                     [term], [location], [platform], max_results=max_results,
-                    proxies=proxies, hours_old=hours_old,
+                    proxies=None,  # Pass None since we're handling rotation manually
+                    proxy=proxy,   # Pass the specific proxy for this task
+                    hours_old=hours_old,
                 )
                 return combination, frame, "success" if not frame.empty else "empty"
             except Exception as error:
@@ -254,9 +265,22 @@ def run_extraction(terms: list[str], locations: list[str], platforms: list[str],
                 )
                 return combination, None, f"failed: {error}"
 
-        worker_count = min(6, max(1, len(combinations)))
+        # Use environment variable for max workers, with fallback to default logic
+        max_workers_env = os.environ.get("JOB_MAX_WORKERS")
+        if max_workers_env:
+            try:
+                max_workers = int(max_workers_env)
+                # Ensure it's at least 1
+                max_workers = max(1, max_workers)
+            except ValueError:
+                # If invalid, fall back to default logic
+                max_workers = min(6, max(1, len(combinations)))
+        else:
+            max_workers = min(6, max(1, len(combinations)))
+        worker_count = min(max_workers, len(combinations)) if len(combinations) > 0 else 1
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(collect_one, combination) for combination in combinations]
+            # Submit all tasks with their indices for proxy rotation
+            futures = [executor.submit(collect_one, combination, index) for index, combination in enumerate(combinations)]
             for index, future in enumerate(as_completed(futures), start=1):
                 (term, location, platform), frame, status = future.result()
                 platform_status[f"{platform}:{location}:{term}"] = status
@@ -268,8 +292,8 @@ def run_extraction(terms: list[str], locations: list[str], platforms: list[str],
         if not raw.empty:
             raw = raw.drop_duplicates(subset=["job_url"], keep="first").reset_index(drop=True)
         enriched = enrich_jobs(raw)
-        save_to_sqlite(enriched, str(DATABASE_PATH), "jobs")
-        save_to_files(enriched, str(BASE_DIR / "job_market_export"))
+        dropped_count = save_to_sqlite(enriched, str(DATABASE_PATH), "jobs")
+        save_to_files(enriched, str(BASE_DIR / EXPORT_BASE_FILENAME))
         valid_count = int(enriched.get("title", pd.Series(dtype=str)).astype(str).str.strip().ne("").sum())
         save_extraction_run(str(DATABASE_PATH), {
             "run_id": str(uuid4()),
@@ -281,7 +305,7 @@ def run_extraction(terms: list[str], locations: list[str], platforms: list[str],
             "platform_status": platform_status,
         })
     selected = filter_jobs(enriched, min_exp=min_exp, max_exp=max_exp)
-    return selected, len(raw), valid_count, logs.messages
+    return selected, len(raw), valid_count, dropped_count, logs.messages
 
 
 def show_scrape_section() -> None:
@@ -325,7 +349,7 @@ def show_scrape_section() -> None:
         result_choice = st.select_slider(
             "Max results per search",
             options=result_options,
-            value="No limit",
+            value=50,  # Default to 50 instead of "No limit"
             key="scrape_max_results",
             help="Drag to the far right for No limit, or choose a numeric maximum.",
         )
@@ -334,7 +358,9 @@ def show_scrape_section() -> None:
         min_exp = experience_columns[0].number_input("Min experience (years)", 0.0, 40.0, 0.0, 0.5, key="scrape_min_exp")
         max_exp = experience_columns[1].number_input("Max experience (years)", 0.0, 40.0, 40.0, 0.5, key="scrape_max_exp")
         with st.expander("Proxy configuration (optional)"):
-            proxy_text = st.text_area("Proxies", placeholder="host:port, user:pass@host:port", height=80, key="scrape_proxy_text")
+            # Use environment variable for default proxy list
+            default_proxy_list = os.environ.get("PROXY_LIST", "")
+            proxy_text = st.text_area("Proxies", value=default_proxy_list, placeholder="host:port, user:pass@host:port", height=80, key="scrape_proxy_text")
         action_columns = st.columns(2)
         reset_submitted = action_columns[0].form_submit_button("Reset selections", use_container_width=True)
         submitted = action_columns[1].form_submit_button("Start Extraction Pipeline", type="primary", use_container_width=True)
@@ -359,6 +385,27 @@ def show_scrape_section() -> None:
         st.error("Minimum experience cannot exceed maximum experience.")
         return
 
+    # Calculate search combinations and warn about unbounded searches
+    combination_count = len(terms) * len(locations) * len(platforms)
+
+    # Check if we need to show a warning about unbounded searches
+    show_warning = False
+    warning_message = ""
+
+    if result_choice == "No limit":
+        show_warning = True
+        warning_message = f"This will run {combination_count} searches with no result cap — this may take a long time and risks getting blocked"
+    elif combination_count > 20:  # Warn for large combination counts
+        show_warning = True
+        warning_message = f"This will run {combination_count} searches with {result_choice} results each — this may take a long time"
+
+    # Show warning and require confirmation if needed
+    if show_warning:
+        st.warning(warning_message)
+        confirm = st.checkbox("I understand the risks and want to proceed", key="confirm_unbounded_search")
+        if not confirm:
+            st.stop()  # Stop execution if user doesn't confirm
+
     progress = st.progress(0, text="Starting extraction pipeline")
     freshness_hours = {"Any time": None, "Past 12 hours": 12, "Past 2 days": 48, "Past 7 days": 168}.get(freshness)
     if freshness == "Custom":
@@ -366,7 +413,7 @@ def show_scrape_section() -> None:
     with st.status("Running extraction pipeline", expanded=True) as status:
         try:
             progress.progress(20, text="Collecting public listings")
-            records, raw_count, valid_count, logs = run_extraction(
+            records, raw_count, valid_count, dropped_count, logs = run_extraction(
                 terms, locations, platforms, max_results, min_exp, max_exp,
                 _parse_proxies(proxy_text),
                 hours_old=freshness_hours,
@@ -378,7 +425,7 @@ def show_scrape_section() -> None:
             for message in logs:
                 st.write(message)
             status.update(label="Extraction complete", state="complete")
-            st.success(f"Scraped {raw_count:,} raw records and saved {valid_count:,} valid extracted records.")
+            st.success(f"Scraped {raw_count:,} raw records and saved {valid_count:,} valid extracted records. Dropped {dropped_count:,} rows with missing job_url.")
             st.info("The SQLite database and timestamped jobs CSV/JSON exports have been updated.")
             load_jobs.clear()
             st.dataframe(_display_frame(records), hide_index=True, use_container_width=True)

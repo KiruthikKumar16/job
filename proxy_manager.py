@@ -7,6 +7,9 @@ complete a short, unauthenticated health check.
 from __future__ import annotations
 
 import logging
+import os
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import perf_counter
 from typing import Any
@@ -16,6 +19,13 @@ import requests
 LOGGER = logging.getLogger(__name__)
 REQUEST_TIMEOUT_SECONDS = 4
 TEST_URL = "https://api.ipify.org?format=json"
+
+# Cache for proxy pool with TTL (time-to-live) in seconds.
+_PROXY_POOL_CACHE: list[str] = []
+_PROXY_POOL_TIMESTAMP: float = 0.0
+_PROXY_POOL_LOCK = threading.Lock()
+# TTL can be configured via environment variable, default to 300 seconds (5 minutes).
+_PROXY_POOL_TTL = float(os.getenv("PROXY_POOL_TTL", "300.0"))
 
 
 def _as_url(proxy: str) -> str:
@@ -64,7 +74,18 @@ def _fetch_geonode(limit: int) -> list[str]:
 
 
 def get_proxy_pool(limit: int = 20) -> list[str]:
-    """Fetch and concurrently validate up to ``limit`` HTTP/S proxy URLs."""
+    """Fetch and concurrently validate up to ``limit`` HTTP/S proxy URLs.
+    Returns a cached proxy pool if it is still within the TTL window.
+    """
+    global _PROXY_POOL_CACHE, _PROXY_POOL_TIMESTAMP
+    # Check if we have a valid cached pool
+    current_time = time.time()
+    with _PROXY_POOL_LOCK:
+        if _PROXY_POOL_CACHE and (current_time - _PROXY_POOL_TIMESTAMP) < _PROXY_POOL_TTL:
+            # Return a copy to avoid accidental modification of the cached list
+            return list(_PROXY_POOL_CACHE)
+
+    # If we are here, we need to fetch a new pool
     if limit < 1:
         return []
     candidates: list[str] = []
@@ -87,4 +108,10 @@ def get_proxy_pool(limit: int = 20) -> list[str]:
             except requests.RequestException:
                 continue
     LOGGER.info("Validated %d of %d public proxies", len(working), len(unique_candidates))
+
+    # Update the cache
+    with _PROXY_POOL_LOCK:
+        _PROXY_POOL_CACHE = working
+        _PROXY_POOL_TIMESTAMP = current_time
+
     return working

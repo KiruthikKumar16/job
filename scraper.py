@@ -20,9 +20,31 @@ import requests
 from bs4 import BeautifulSoup
 
 LOGGER = logging.getLogger(__name__)
+
+import os
+import threading
+
+# Minimum interval between requests to the same site (in seconds). Configurable via environment variable.
+_MIN_REQUEST_INTERVAL = float(os.getenv("JOB_SCRAPER_MIN_REQUEST_INTERVAL", "1.0"))
+_last_request_times = {}
+_request_lock = threading.Lock()
+
+
+def _rate_limit_site(site: str) -> None:
+    """Ensure at least _MIN_REQUEST_INTERVAL seconds have passed since the last request to the given site.
+    This is thread-safe and uses a lock to coordinate between threads.
+    """
+    with _request_lock:
+        now = time.time()
+        last_time = _last_request_times.get(site)
+        if last_time is not None:
+            elapsed = now - last_time
+            if elapsed < _MIN_REQUEST_INTERVAL:
+                time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
+        _last_request_times[site] = time.time()
 NORMALIZED_COLUMNS = [
     "site", "title", "company", "location", "job_url", "description",
-    "date_posted", "salary_min", "salary_max", "currency",
+    "date_posted", "salary_min", "salary_max", "currency", "card_summary",
 ]
 METADATA_COLUMNS = ["search_term", "search_location", "scraped_at"]
 SUPPORTED_PLATFORMS = {"linkedin", "indeed", "glassdoor", "naukri", "zip_recruiter"}
@@ -32,7 +54,9 @@ NAUKRI_USER_AGENTS = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/121.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 Version/17.2 Safari/605.1.15",
 )
-_naukri_session = requests.Session()
+import threading
+
+_naukri_local = threading.local()
 
 
 def _empty_frame() -> pd.DataFrame:
@@ -113,6 +137,7 @@ def _normalise_jobspy(raw: pd.DataFrame, site: str) -> pd.DataFrame:
             "salary_min": _first(row, ["min_amount", "salary_min", "min_salary"]),
             "salary_max": _first(row, ["max_amount", "salary_max", "max_salary"]),
             "currency": _text(_first(row, ["currency", "salary_currency"])),
+            "card_summary": None,
         }
         records.append(record)
     return pd.DataFrame.from_records(records, columns=NORMALIZED_COLUMNS)
@@ -160,11 +185,16 @@ def _jobspy_fetch(term: str, location: str, site: str, max_results: int | None, 
 
 
 def _naukri_fetch(term: str, location: str, max_results: int | None) -> pd.DataFrame:
-    """Fetch Naukri's public search HTML with a persistent, polite session."""
+    """Fetch Naukri's public search HTML with a persistent, polite session per thread."""
     url = _browser_url(term=term, location=location, site="naukri", country="India")
     headers = {"User-Agent": random.choice(NAUKRI_USER_AGENTS), "Accept-Language": "en-IN,en;q=0.9"}
+    # Get or create a session for the current thread
+    session = getattr(_naukri_local, 'session', None)
+    if session is None:
+        session = requests.Session()
+        _naukri_local.session = session
     try:
-        response = _naukri_session.get(url, headers=headers, timeout=30)
+        response = session.get(url, headers=headers, timeout=30)
         if response.status_code == 406:
             LOGGER.warning("Naukri rejected the request with HTTP 406; skipping this query")
             return _empty_frame()
@@ -189,7 +219,7 @@ def _browser_url(site: str, term: str, location: str, country: str) -> str:
     return urls[site]
 
 
-async def _playwright_fetch(term: str, location: str, site: str, max_results: int, proxy: str | None,
+async def _playwright_fetch(term: str, location: str, site: str, max_results: int | None, proxy: str | None,
                             country: str) -> pd.DataFrame:
     """Render a public search page and extract semantic job-card attributes."""
     from playwright.async_api import async_playwright
@@ -234,12 +264,29 @@ def _extract_browser_cards(html: str, site: str, fallback_location: str, limit: 
         cards = soup.select(selector)
         if cards:
             break
+
+    # Site-specific selectors for job title/link elements to improve reliability
+    link_selectors = {
+        "linkedin": "h3.base-search-card__title a, h3 a[class*=job-title], a[data-control-name*=job_search_result]",
+        "indeed": "h2.jobTitle a[data-jk], h2 a[class*=jobTitle], a[data-hn*=job]",
+        "glassdoor": "a.jobLink, a[data-testid*=job-title], a[class*=jobLink]",
+        "naukri": "a.title, a[class*=title], h2 a",
+        "zip_recruiter": "h2.job_title a, a[class*=job_title], a[data-testid*=job-title]"
+    }
+
     records: list[dict[str, Any]] = []
     for card in cards[:limit]:
         title_node = card.select_one("h2, h3, [class*=title], a[class*=job]")
         company_node = card.select_one("[class*=company], [data-testid*=employer]")
         location_node = card.select_one("[class*=location], [data-testid*=location]")
-        link = card.select_one("a[href]")
+
+        # Use site-specific selector for link, fallback to generic if not found or not matching site
+        link = None
+        if site in link_selectors:
+            link = card.select_one(link_selectors[site])
+        if not link:  # Fallback to generic selector
+            link = card.select_one("a[href]")
+
         text = card.get_text(" ", strip=True)
         if not title_node or not _text(title_node.get_text(" ", strip=True)):
             continue
@@ -253,14 +300,16 @@ def _extract_browser_cards(html: str, site: str, fallback_location: str, limit: 
             "site": site, "title": title_node.get_text(" ", strip=True),
             "company": company_node.get_text(" ", strip=True) if company_node else "",
             "location": location_node.get_text(" ", strip=True) if location_node else fallback_location,
-            "job_url": href, "description": text, "date_posted": None,
+            "job_url": href, "description": None, "date_posted": None,
             "salary_min": None, "salary_max": None, "currency": "",
+            "card_summary": text,
         })
     return pd.DataFrame.from_records(records, columns=NORMALIZED_COLUMNS)
 
 
 def fetch_jobs(search_terms: list[str], locations: list[str], platforms: list[str], max_results: int | None = 50,
-               proxies: list[str] | None = None, country: str = "India", hours_old: int | None = None) -> pd.DataFrame:
+               proxies: list[str] | None = None, country: str = "India", hours_old: int | None = None,
+               proxy: str | None = None) -> pd.DataFrame:
     """Fetch jobs for all query combinations, falling back after access blocks.
 
     A non-blocking primary failure is logged and skipped; a recognized block
@@ -274,20 +323,24 @@ def fetch_jobs(search_terms: list[str], locations: list[str], platforms: list[st
     if invalid:
         raise ValueError(f"Unsupported platforms: {', '.join(sorted(invalid))}")
     frames: list[pd.DataFrame] = []
-    for index, (term, location, site) in enumerate(
+    for term, location, site in (
         (query, place, platform)
         for query in search_terms
         for place in locations
         for platform in selected
     ):
-        proxy = proxies[index % len(proxies)] if proxies else None
+        # Use the passed proxy for this specific call if provided, otherwise use the proxies list
+        effective_proxies = [proxy] if proxy else proxies
         active_proxies = proxies
         try:
+            # Apply rate limiting for this site
+            _rate_limit_site(site)
             if site == "naukri":
+                # Keep the existing random sleep for Naukri as well
                 time.sleep(random.uniform(1.0, 3.0))
                 jobs = _naukri_fetch(term, location, max_results)
             else:
-                jobs = _jobspy_fetch(term, location, site, max_results, active_proxies, country, hours_old)
+                jobs = _jobspy_fetch(term, location, site, max_results, effective_proxies, country, hours_old)
                 jobs = _annotate_jobs(jobs, term, location)
             frames.append(jobs)
             if jobs.empty and site in {"glassdoor", "naukri"}:
@@ -305,15 +358,22 @@ def fetch_jobs(search_terms: list[str], locations: list[str], platforms: list[st
                     active_proxies = get_proxy_pool()
                     if active_proxies:
                         LOGGER.info("Retrying %s with %d validated public proxies", site, len(active_proxies))
-                        frames.append(_jobspy_fetch(term, location, site, max_results, active_proxies, country, hours_old))
+                        # Apply rate limiting for retry as well
+                        _rate_limit_site(site)
+                        jobs = _jobspy_fetch(term, location, site, max_results, active_proxies, country, hours_old)
+                        jobs = _annotate_jobs(jobs, term, location)
+                        frames.append(jobs)
                         continue
                     LOGGER.warning("No working public proxies available for %s", site)
                 except Exception as proxy_error:
                     LOGGER.warning("Proxy retry failed for %s: %s", site, proxy_error)
             LOGGER.warning("JobSpy blocked for %s; using Playwright fallback", site)
             try:
-                browser_proxy = active_proxies[index % len(active_proxies)] if active_proxies else proxy
-                frames.append(asyncio.run(_playwright_fetch(term, location, site, max_results, browser_proxy, country)))
+                # Apply rate limiting for Playwright fallback
+                _rate_limit_site(site)
+                jobs = asyncio.run(_playwright_fetch(term, location, site, max_results, proxy, country))
+                jobs = _annotate_jobs(jobs, term, location)
+                frames.append(jobs)
             except Exception as fallback_error:
                 LOGGER.error("Browser fallback failed for %s: %s", site, fallback_error)
     if not frames:

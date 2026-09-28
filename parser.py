@@ -1,12 +1,61 @@
 """Title-aware NLP normalization for Indian job listings."""
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
 from typing import Any
 
 import pandas as pd
 
-SKILL_CATALOG = ["Python", "Java", "JavaScript", "TypeScript", "React", "Node.js", "AWS", "GCP", "Azure", "Docker", "Kubernetes", "SQL", "PostgreSQL", "MongoDB", "Git", "FastAPI", "Flask", "Django", "Spark", "Kafka", "Terraform"]
+LOGGER = logging.getLogger(__name__)
+
+def _load_skill_catalog() -> list[str]:
+    """Load skill catalog from JSON file, fallback to default list."""
+    default_skills = [
+        "Python", "Java", "JavaScript", "TypeScript", "C#", "Scala", "R", "PHP", "Ruby", "Go", "Rust", "Kotlin", "Swift",
+        "React", "Node.js", "Angular", "Vue.js", "Svelte", "Django", "Flask", "FastAPI", "Spring", "Spring Boot", "ASP.NET", "Laravel",
+        "AWS", "Azure", "GCP", "IBM Cloud", "Oracle Cloud",
+        "Docker", "Kubernetes", "OpenShift", "Mesos",
+        "Jenkins", "GitLab CI", "GitHub Actions", "CircleCI", "Travis CI",
+        "Terraform", "Ansible", "Chef", "Puppet", "SaltStack",
+        "SQL", "PostgreSQL", "MySQL", "MariaDB", "MongoDB", "Redis", "Cassandra", "Oracle", "SQL Server", "SQLite", "DynamoDB",
+        "Redshift", "BigQuery", "Snowflake", "PostgreSQL", "Azure Synapse",
+        "Excel", "Power BI", "Tableau", "Qlik", "Looker", "SSRS", "SAP BusinessObjects", "MicroStrategy", "Metabase",
+        "Spark", "Hadoop", "Flink", "Kafka", "RabbitMQ", "ActiveMQ",
+        "Git", "SVN", "Mercurial",
+        "Linux", "Unix", "Windows", "macOS",
+        "REST API", "GraphQL", "gRPC", "SOAP",
+        "HTML", "CSS", "Sass", "Less", "Bootstrap", "Tailwind",
+        "Jest", "Mocha", "JUnit", "TestNG", "PyTest",
+        "Agile", "Scrum", "Kanban",
+        "Machine Learning", "Deep Learning", "TensorFlow", "PyTorch", "Scikit-learn", "Keras", "XGBoost",
+        "Natural Language Processing", "Computer Vision",
+        "Data Analysis", "Statistical Analysis", "Data Mining",
+        "ETL", "Data Warehousing", "BI Reporting",
+        "Shell Scripting", "Bash", "PowerShell"
+    ]
+    try:
+        # Look for skill_catalog.json in the same directory as this file
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        catalog_path = os.path.join(module_dir, "skill_catalog.json")
+        if os.path.exists(catalog_path):
+            with open(catalog_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and all(isinstance(item, str) for item in data):
+                    return data
+                else:
+                    LOGGER.warning("skill_catalog.json does not contain a list of strings; using default")
+        else:
+            LOGGER.warning("skill_catalog.json not found; using default skill catalog")
+    except Exception as e:
+        LOGGER.warning("Failed to load skill_catalog.json: %s; using default", e)
+    return default_skills
+
+# Load the skill catalog once at module import
+SKILL_CATALOG = _load_skill_catalog()
+
 TITLE_ONLY_MARKER = "Extracted from Title Only"
 ENTRY_PATTERN = re.compile(r"\b(fresher|trainee|intern|associate|graduate|sde[- ]?1|junior|0[- ]?[12])\b", re.I)
 MID_PATTERN = re.compile(r"\b(sde[- ]?2|l4|engineer\s+ii)\b", re.I)
@@ -121,7 +170,27 @@ def enrich_jobs(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _data_quality_score(row: pd.Series) -> int:
-    """Score source completeness; inferred fallback labels do not hide missing data."""
-    source_fields = ("title", "company", "location", "job_url", "description", "date_posted")
-    present = sum(bool(row.get(field)) for field in source_fields)
-    return round((present / len(source_fields)) * 100)
+    """Score record completeness based on enriched data fields.
+
+    For raw scraped data, checks core fields: title, company, location, job_url, description, date_posted.
+    For enriched data, also considers qualification and extracted_skills when available.
+    Returns percentage of present fields (0-100).
+    """
+    # Core fields that should always be present after normalization
+    core_fields = ("title", "company", "location", "job_url", "description", "date_posted")
+    # Enriched fields that may be present after NLP processing
+    enriched_fields = ("qualification", "extracted_skills")
+
+    # Check which fields are actually present in the row
+    present_core = sum(bool(row.get(field)) for field in core_fields)
+    present_enriched = sum(bool(row.get(field)) for field in enriched_fields)
+
+    # If we have enriched fields, use them; otherwise fall back to core only
+    if present_enriched > 0:
+        total_fields = len(core_fields) + len(enriched_fields)
+        present = present_core + present_enriched
+    else:
+        total_fields = len(core_fields)
+        present = present_core
+
+    return round((present / total_fields) * 100) if total_fields > 0 else 0

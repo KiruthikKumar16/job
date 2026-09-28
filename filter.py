@@ -32,11 +32,13 @@ def filter_jobs(df: pd.DataFrame, max_exp: float | None = None, min_exp: float |
     seniorities = result.get("seniority", pd.Series("Not Specified", index=result.index)).fillna("Not Specified")
     min_values = pd.to_numeric(result.get("min_exp", pd.Series(index=result.index)), errors="coerce")
     max_values = pd.to_numeric(result.get("max_exp", pd.Series(index=result.index)), errors="coerce")
+    # Identify rows with no numeric experience and seniority not specified (truly unclassified)
+    unclassified = min_values.isna() & max_values.isna() & seniorities.eq("Not Specified")
     if max_exp is not None:
-        result = result[(min_values <= max_exp) | seniorities.eq("Entry-Level")]
+        result = result[(min_values <= max_exp) | seniorities.eq("Entry-Level") | unclassified]
     if min_exp is not None:
         numeric_upper = max_values.fillna(min_values)
-        result = result[(numeric_upper >= min_exp) | seniorities.eq("Senior/Lead")]
+        result = result[(numeric_upper >= min_exp) | seniorities.eq("Senior/Lead") | unclassified]
     if seniority:
         result = result[seniorities.eq(seniority)]
     return result.reset_index(drop=True)

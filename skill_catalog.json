@@ -1,0 +1,23 @@
+[
+    "Python", "Java", "JavaScript", "TypeScript", "C#", "Scala", "R", "PHP", "Ruby", "Go", "Rust", "Kotlin", "Swift",
+    "React", "Node.js", "Angular", "Vue.js", "Svelte", "Django", "Flask", "FastAPI", "Spring", "Spring Boot", "ASP.NET", "Laravel",
+    "AWS", "Azure", "GCP", "IBM Cloud", "Oracle Cloud",
+    "Docker", "Kubernetes", "OpenShift", "Mesos",
+    "Jenkins", "GitLab CI", "GitHub Actions", "CircleCI", "Travis CI",
+    "Terraform", "Ansible", "Chef", "Puppet", "SaltStack",
+    "SQL", "PostgreSQL", "MySQL", "MariaDB", "MongoDB", "Redis", "Cassandra", "Oracle", "SQL Server", "SQLite", "DynamoDB",
+    "Redshift", "BigQuery", "Snowflake", "PostgreSQL", "Azure Synapse",
+    "Excel", "Power BI", "Tableau", "Qlik", "Looker", "SSRS", "SAP BusinessObjects", "MicroStrategy", "Metabase",
+    "Spark", "Hadoop", "Flink", "Kafka", "RabbitMQ", "ActiveMQ",
+    "Git", "SVN", "Mercurial",
+    "Linux", "Unix", "Windows", "macOS",
+    "REST API", "GraphQL", "gRPC", "SOAP",
+    "HTML", "CSS", "Sass", "Less", "Bootstrap", "Tailwind",
+    "Jest", "Mocha", "JUnit", "TestNG", "PyTest",
+    "Agile", "Scrum", "Kanban",
+    "Machine Learning", "Deep Learning", "TensorFlow", "PyTorch", "Scikit-learn", "Keras", "XGBoost",
+    "Natural Language Processing", "Computer Vision",
+    "Data Analysis", "Statistical Analysis", "Data Mining",
+    "ETL", "Data Warehousing", "BI Reporting",
+    "Shell Scripting", "Bash", "PowerShell"
+]

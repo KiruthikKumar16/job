@@ -1,3 +1,8 @@
+import sys
+import os
+# Add the current directory to the path so we can import the modules
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/..')
+
 import pandas as pd
 
 from filter import filter_jobs
@@ -52,3 +57,12 @@ def test_arbitrary_csv_headers_are_normalized_and_enriched():
     assert frame.loc[0, "title"] == "Data Analyst"
     assert frame.loc[0, "qualification"] == "Bachelor's (Computer Science/IT)"
     assert frame.loc[0, "extracted_skills"] == ["Python", "SQL"]
+
+
+if __name__ == '__main__':
+    test_generic_qualification_is_never_unspecified()
+    test_title_fallback_extracts_skills_and_seniority()
+    test_required_skills_are_independent_and_all_required()
+    test_run_history_and_export_keep_qualification(None)  # tmp_path not needed for this test
+    test_arbitrary_csv_headers_are_normalized_and_enriched()
+    print("All tests passed.")

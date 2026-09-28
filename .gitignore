@@ -28,3 +28,6 @@ jobs_*.json
 .amazonq/
 .DS_Store
 Thumbs.db
+
+# gstack (global install)
+.amazonq/rules/gstack.md
